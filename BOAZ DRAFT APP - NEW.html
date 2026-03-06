@@ -1,0 +1,1677 @@
+<!-- ═══════════════════════════════════════════════════════════════
+  PHASE II — IN-SEASON MODULE (build after draft completes)
+  ═══════════════════════════════════════════════════════════════
+
+  1. YAHOO SPORTS API INTEGRATION
+     - OAuth 2.0 login flow via developer.yahoo.com
+     - Live roster sync, transaction feed, standings pull
+     - Real-time waiver wire availability
+
+  2. WEEKLY STREAMING SP RECOMMENDER
+     - Runs each week, ready BEFORE Sunday 8PM ET bid deadline
+     - Ranks available SP by: opponent K-rate, park factor,
+       Vegas implied runs, home/away splits, recent form
+     - Filters to only players available in BOAZ league
+     - Output: top 3-5 streamers with matchup grades + bid $$ rec
+
+  3. WAIVER WIRE RANKER (needs-based)
+     - Pulls available players from Yahoo
+     - Scores each player against GE's specific category gaps
+     - Prioritizes: SB sources (top gap), saves depth, 2B eligibility
+     - Weekly blind bid recommendations with suggested amounts
+     - Sunday deadline countdown timer
+
+  4. TRADE ANALYZER
+     - Input proposed trade, score roto impact across all 10 cats
+     - Win-now vs. future value toggle
+
+  5. CATEGORY GAP TRACKER
+     - Live roto standings showing pts gap to each competitor per cat
+     - Waiver priority auto-updates based on current standings gap
+
+═══════════════════════════════════════════════════════════════ -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOAZ 2026 — Sweetwater Knights Command Center</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root {
+  --bg:#080b0f; --bg2:#0d1117; --bg3:#131920; --bg4:#1a2332;
+  --border:#1e2a3a; --border2:#283648;
+  --text:#e2e8f4; --text2:#7a8fa8; --text3:#3d5066;
+  --green:#00e676; --green2:#00c853; --green-dim:#001a0a;
+  --yellow:#ffd740; --yellow-dim:#2a1f00;
+  --red:#ff4444; --red-dim:#2a0000;
+  --blue:#4488ff; --blue-dim:#0a1830;
+  --cyan:#00e5ff; --orange:#ff9100; --purple:#c662f5;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;}
+
+/* BASEBALL WATERMARK */
+body::before{
+  content:'';position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:600px;height:600px;opacity:0.018;pointer-events:none;z-index:0;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Ccircle cx='100' cy='100' r='90' fill='none' stroke='white' stroke-width='6'/%3E%3Cpath d='M100 10 Q130 50 130 100 Q130 150 100 190' fill='none' stroke='white' stroke-width='4'/%3E%3Cpath d='M100 10 Q70 50 70 100 Q70 150 100 190' fill='none' stroke='white' stroke-width='4'/%3E%3Cpath d='M10 100 Q50 70 100 70 Q150 70 190 100' fill='none' stroke='white' stroke-width='2'/%3E%3Cpath d='M10 100 Q50 130 100 130 Q150 130 190 100' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:center;background-size:contain;
+}
+
+/* HEADER */
+.hdr{background:var(--bg2);border-bottom:2px solid var(--border);height:44px;display:flex;align-items:center;gap:8px;padding:0 10px;flex-shrink:0;z-index:50;position:relative;}
+.hdr-logo{font-family:'Rajdhani';font-size:16px;font-weight:700;letter-spacing:3px;color:var(--green);white-space:nowrap;}
+.hdr-logo span{color:var(--text3);}
+.hdr-sub{font-family:'Rajdhani';font-size:10px;color:var(--yellow);letter-spacing:2px;white-space:nowrap;}
+.badge{font-family:'Rajdhani';font-size:11px;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:3px;border:1px solid;white-space:nowrap;}
+.badge-pick{color:var(--yellow);border-color:var(--yellow);background:var(--yellow-dim);}
+.badge-budget{color:var(--green);border-color:var(--green);background:var(--green-dim);}
+.hdr-spacer{flex:1;}
+.hdr-btn{font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:1px;padding:3px 8px;border-radius:3px;border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;white-space:nowrap;}
+.hdr-btn:hover{color:var(--text);border-color:var(--border);}
+.hdr-btn.export{color:var(--yellow);border-color:var(--yellow);background:var(--yellow-dim);}
+
+/* TABS */
+.tabs{background:var(--bg2);border-bottom:1px solid var(--border);display:flex;flex-shrink:0;overflow-x:auto;z-index:40;}
+.tab-btn{font-family:'Rajdhani';font-size:12px;font-weight:700;letter-spacing:1px;padding:7px 14px;border:none;background:transparent;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:.15s;}
+.tab-btn:hover{color:var(--text2);}
+.tab-btn.active{color:var(--green);border-bottom-color:var(--green);}
+.tab-btn.you-tab{color:var(--yellow)!important;}
+.tab-btn.you-tab.active{color:var(--yellow)!important;border-bottom-color:var(--yellow)!important;}
+
+/* MAIN */
+.main{flex:1;overflow:hidden;position:relative;z-index:1;}
+.tab-panel{display:none;height:100%;overflow:hidden;}
+.tab-panel.active{display:flex;}
+
+/* ─── DRAFT TAB ─── */
+.draft-layout{display:grid;grid-template-columns:1fr 340px;width:100%;height:100%;overflow:hidden;}
+
+/* POOL */
+.pool{display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden;}
+.pool-toolbar{padding:8px 10px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;flex-shrink:0;}
+.pool-filters{display:flex;gap:5px;flex-wrap:wrap;}
+.filter-btn{font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:3px;border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;}
+.filter-btn.active{background:var(--blue-dim);border-color:var(--blue);color:var(--blue);}
+.search-row{display:flex;gap:5px;}
+.pool-search{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:'IBM Plex Mono';font-size:11px;padding:4px 8px;border-radius:3px;outline:none;}
+.pool-search:focus{border-color:var(--cyan);}
+.trigger-bar{font-family:'IBM Plex Mono';font-size:9px;color:var(--text3);padding:3px 0;}
+.trigger-active{color:var(--yellow);}
+.pool-list{flex:1;overflow-y:auto;}
+.pool-list::-webkit-scrollbar{width:4px;}
+.pool-list::-webkit-scrollbar-thumb{background:var(--border2);}
+.player-row{display:grid;grid-template-columns:28px 70px 1fr 48px 40px;align-items:center;gap:6px;padding:5px 10px;border-bottom:1px solid var(--border);cursor:pointer;transition:.1s;}
+.player-row:hover{background:var(--bg3);}
+.player-row.taken{opacity:.3;}
+.pr-rank{font-family:'IBM Plex Mono';font-size:9px;color:var(--text3);}
+.pr-pos{display:inline-block;background:var(--bg4);border:1px solid var(--border2);border-radius:3px;font-family:'Rajdhani';font-size:9px;font-weight:700;padding:1px 5px;color:var(--orange);}
+.pr-name{font-size:12px;font-weight:500;color:var(--text);}
+.pr-team{font-size:9px;color:var(--text3);}
+.pr-price{font-family:'IBM Plex Mono';font-size:12px;font-weight:700;color:var(--green);text-align:right;}
+.pr-draft-btn{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:1px;padding:2px 6px;border-radius:3px;border:1px solid var(--green);color:var(--green);background:transparent;cursor:pointer;}
+.pr-draft-btn:hover{background:var(--green-dim);}
+.player-row.taken .pr-draft-btn{display:none;}
+.player-row.taken .pr-price{color:var(--text3);}
+.savant-link{font-size:9px;color:var(--blue);cursor:pointer;text-decoration:underline;opacity:.7;}
+.savant-link:hover{opacity:1;}
+
+/* RIGHT PANEL */
+.right-panel{display:flex;flex-direction:column;overflow:hidden;}
+
+/* MANAGER TABS */
+.mgr-tabs-wrap{flex-shrink:0;background:var(--bg2);border-bottom:1px solid var(--border);padding:5px;}
+.mgr-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3px;}
+.mgr-tab{font-family:'Rajdhani';font-size:11px;font-weight:700;padding:4px 2px;text-align:center;border-radius:3px;border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;transition:.15s;line-height:1.2;}
+.mgr-tab:hover{color:var(--text2);border-color:var(--border);}
+.mgr-tab.active{background:var(--bg4);border-color:var(--cyan);color:var(--cyan);}
+.mgr-tab.you{border-color:var(--yellow)!important;}
+.mgr-tab.you.active{background:rgba(255,215,64,.1)!important;color:var(--yellow)!important;}
+.mgr-tab.jordan{border-color:var(--red);}
+.mgr-rem{font-size:8px;opacity:.7;display:block;}
+
+/* ROSTER VIEW */
+.roster-scroll{flex:1;overflow-y:auto;padding:8px;}
+.roster-scroll::-webkit-scrollbar{width:4px;}
+.roster-scroll::-webkit-scrollbar-thumb{background:var(--border2);}
+.roster-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;padding:8px;background:var(--bg3);border-radius:6px;border:1px solid var(--border2);}
+.roster-name{font-family:'Rajdhani';font-size:16px;font-weight:900;}
+.roster-name.you{color:var(--yellow);}
+.roster-name.jordan{color:var(--red);}
+.roster-nickname{font-size:9px;color:var(--yellow);letter-spacing:1px;margin-top:1px;}
+.roster-budget{text-align:right;}
+.roster-rem{font-family:'IBM Plex Mono';font-size:18px;font-weight:700;color:var(--green);}
+.roster-rem.tight{color:var(--yellow);}
+.roster-rem.broke{color:var(--red);}
+.budget-bar{height:3px;background:var(--bg4);border-radius:2px;margin-bottom:6px;}
+.budget-fill{height:100%;border-radius:2px;background:var(--green);transition:.3s;}
+.budget-fill.tight{background:var(--yellow);}
+.budget-fill.broke{background:var(--red);}
+.intel-btn-sm{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:3px;border:1px solid var(--cyan);color:var(--cyan);background:transparent;cursor:pointer;margin-top:4px;}
+.intel-btn-sm:hover{background:rgba(0,229,255,.08);}
+.jordan-jab{background:rgba(255,68,68,.06);border:1px solid rgba(255,68,68,.25);border-radius:4px;padding:5px 8px;margin-bottom:6px;font-size:10px;color:var(--red);font-style:italic;}
+.sec-hdr{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;color:var(--text3);padding:6px 0 3px;border-top:1px solid var(--border);margin-top:4px;}
+.slot-row{display:grid;grid-template-columns:36px 1fr auto;gap:5px;align-items:center;padding:3px 0;min-height:26px;}
+.slot-label{font-family:'Rajdhani';font-size:9px;font-weight:700;color:var(--text3);text-align:center;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:1px 3px;}
+.slot-empty{border:1px dashed var(--border);border-radius:3px;padding:3px 6px;font-size:10px;color:var(--text3);font-style:italic;}
+.slot-player{background:var(--bg3);border:1px solid var(--border2);border-radius:3px;padding:3px 6px;display:flex;align-items:center;gap:5px;cursor:pointer;}
+.slot-player:hover{border-color:var(--border);}
+.slot-pname{font-size:11px;font-weight:500;}
+.slot-pbadge{font-family:'Rajdhani';font-size:8px;font-weight:700;padding:1px 4px;border-radius:2px;background:var(--bg4);}
+.slot-k{background:rgba(255,215,64,.15);border:1px solid rgba(255,215,64,.4);color:var(--yellow);}
+.slot-price{font-family:'IBM Plex Mono';font-size:10px;color:var(--text2);}
+.stat-chip{font-size:9px;color:var(--text3);font-family:'IBM Plex Mono';}
+
+/* ─── INTEL TAB ─── */
+.intel-layout{display:flex;flex-direction:column;width:100%;height:100%;overflow:hidden;}
+.intel-top{flex-shrink:0;padding:10px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;gap:8px;}
+.intel-inp{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:'IBM Plex Mono';font-size:12px;padding:7px 10px;border-radius:5px;outline:none;}
+.intel-inp:focus{border-color:var(--cyan);}
+.intel-ask{font-family:'Rajdhani';font-size:13px;font-weight:700;letter-spacing:2px;padding:7px 18px;border-radius:5px;border:none;background:var(--cyan);color:var(--bg);cursor:pointer;}
+.intel-ask:disabled{opacity:.5;cursor:not-allowed;}
+.intel-body{display:grid;grid-template-columns:220px 1fr;flex:1;overflow:hidden;}
+.intel-sidebar{border-right:1px solid var(--border);overflow-y:auto;padding:8px;}
+.intel-sidebar::-webkit-scrollbar{width:3px;}
+.intel-sidebar::-webkit-scrollbar-thumb{background:var(--border2);}
+.mgr-card{border:1px solid var(--border);border-radius:5px;padding:6px;margin-bottom:5px;cursor:pointer;transition:.15s;}
+.mgr-card:hover{border-color:var(--border2);background:var(--bg3);}
+.mgr-card.threat-high{border-color:rgba(255,68,68,.4);}
+.mgr-card.threat-med{border-color:rgba(255,215,64,.3);}
+.mgr-card.threat-low{border-color:rgba(0,230,118,.25);}
+.mgr-card-name{font-family:'Rajdhani';font-size:13px;font-weight:800;}
+.mgr-card-nick{font-size:9px;color:var(--text3);margin-top:1px;}
+.mgr-card-rem{font-family:'IBM Plex Mono';font-size:11px;font-weight:700;float:right;}
+.intel-main{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px;}
+.intel-main::-webkit-scrollbar{width:4px;}
+.intel-main::-webkit-scrollbar-thumb{background:var(--border2);}
+.auto-cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;flex-shrink:0;}
+.a-card{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:8px 10px;}
+.a-card-title{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;margin-bottom:5px;}
+.a-card-body{font-size:10px;color:var(--text2);line-height:1.6;}
+.intel-response{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:10px;min-height:60px;}
+.intel-thinking{color:var(--text3);font-style:italic;font-size:12px;}
+.dots span{display:inline-block;animation:dot 1.4s infinite;}&
+.dots span:nth-child(2){animation-delay:.2s;}
+.dots span:nth-child(3){animation-delay:.4s;}
+@keyframes dot{0%,80%,100%{opacity:0}40%{opacity:1}}
+.mgr-profile-card{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:12px;}
+
+/* QUICK PICKS - pick next for each manager before Greg */
+.pick-order-bar{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:8px 10px;}
+.pick-order-title{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:5px;}
+.pick-chips{display:flex;gap:4px;flex-wrap:wrap;}
+.pick-chip{font-family:'Rajdhani';font-size:10px;font-weight:700;padding:2px 8px;border-radius:3px;border:1px solid var(--border2);color:var(--text3);}
+.pick-chip.before-greg{border-color:var(--red);color:var(--red);background:var(--red-dim);}
+.pick-chip.is-greg{border-color:var(--green);color:var(--green);background:var(--green-dim);}
+.pick-chip.after-greg{color:var(--text3);}
+
+/* ─── RESEARCH TAB ─── */
+.research-layout{width:100%;height:100%;overflow:hidden;display:flex;flex-direction:column;}
+.research-tabs{display:flex;gap:2px;padding:8px 10px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0;}
+.r-tab{font-family:'Rajdhani';font-size:11px;font-weight:700;letter-spacing:1px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);color:var(--text3);cursor:pointer;background:transparent;}
+.r-tab.active{background:var(--bg3);border-color:var(--cyan);color:var(--cyan);}
+.research-body{flex:1;overflow:hidden;position:relative;}
+.r-panel{display:none;height:100%;overflow-y:auto;padding:12px;}
+.r-panel.active{display:block;}
+.r-panel::-webkit-scrollbar{width:4px;}
+.r-panel::-webkit-scrollbar-thumb{background:var(--border2);}
+.research-run-btn{font-family:'Rajdhani';font-size:13px;font-weight:700;letter-spacing:2px;padding:8px 24px;border-radius:5px;border:none;background:var(--cyan);color:var(--bg);cursor:pointer;margin-bottom:12px;}
+.research-run-btn:disabled{opacity:.4;cursor:not-allowed;}
+.value-table{width:100%;border-collapse:collapse;font-size:11px;}
+.value-table th{font-family:'Rajdhani';font-size:9px;letter-spacing:2px;color:var(--text3);padding:6px 8px;text-align:left;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);}
+.value-table td{padding:5px 8px;border-bottom:1px solid var(--border);color:var(--text2);}
+.value-table tr:hover td{background:var(--bg3);}
+.val-score{font-family:'IBM Plex Mono';font-weight:700;}
+.val-good{color:var(--green);}
+.val-ok{color:var(--yellow);}
+.val-bad{color:var(--red);}
+.val-name{color:var(--text);font-weight:500;cursor:pointer;}
+.val-name:hover{color:var(--cyan);}
+.val-diff{font-family:'IBM Plex Mono';font-size:10px;}
+.val-diff.pos{color:var(--green);}
+.val-diff.neg{color:var(--red);}
+
+/* ─── MY TEAM TAB ─── */
+.my-team-layout{width:100%;height:100%;overflow:hidden;display:grid;grid-template-columns:1fr 320px;}
+.my-team-left{overflow-y:auto;padding:12px;border-right:1px solid var(--border);}
+.my-team-left::-webkit-scrollbar{width:4px;}
+.my-team-left::-webkit-scrollbar-thumb{background:var(--border2);}
+.my-team-right{overflow-y:auto;padding:10px;}
+.my-team-right::-webkit-scrollbar{width:4px;}
+.my-team-right::-webkit-scrollbar-thumb{background:var(--border2);}
+.team-hero{background:linear-gradient(135deg,rgba(0,230,118,.08),rgba(0,229,255,.05));border:1px solid rgba(0,230,118,.2);border-radius:8px;padding:12px;margin-bottom:10px;}
+.team-hero-name{font-family:'Rajdhani';font-size:24px;font-weight:900;color:var(--yellow);letter-spacing:3px;}
+.team-hero-sub{font-size:11px;color:var(--text2);margin-top:2px;}
+.stat-holes{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;}
+.stat-hole-card{background:var(--bg3);border-radius:5px;padding:7px 9px;border:1px solid var(--border2);}
+.sh-title{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;margin-bottom:3px;}
+.sh-good{color:var(--green);}
+.sh-warn{color:var(--yellow);}
+.sh-bad{color:var(--red);}
+.roster-mgmt-card{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:10px;margin-bottom:8px;}
+.rm-title{font-family:'Rajdhani';font-size:11px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:6px;}
+.rm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;}
+.rm-item{background:var(--bg4);border-radius:4px;padding:6px;text-align:center;}
+.rm-num{font-family:'IBM Plex Mono';font-size:18px;font-weight:700;color:var(--green);}
+.rm-label{font-size:9px;color:var(--text3);font-family:'Rajdhani';letter-spacing:1px;}
+
+/* DRAFT MODAL */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:1000;align-items:center;justify-content:center;}
+.modal-overlay.open{display:flex;}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:20px;width:340px;max-width:95vw;}
+.modal-title{font-family:'Rajdhani';font-size:18px;font-weight:900;color:var(--cyan);margin-bottom:14px;letter-spacing:2px;}
+.modal-field{margin-bottom:10px;}
+.modal-label{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:4px;display:block;}
+.modal-inp{width:100%;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:'IBM Plex Mono';font-size:13px;padding:6px 10px;border-radius:4px;outline:none;}
+.modal-inp:focus{border-color:var(--cyan);}
+.modal-btns{display:flex;gap:8px;margin-top:14px;}
+.modal-confirm{flex:1;font-family:'Rajdhani';font-size:13px;font-weight:800;letter-spacing:2px;padding:8px;border-radius:5px;border:none;background:var(--green);color:var(--bg);cursor:pointer;}
+.modal-cancel{font-family:'Rajdhani';font-size:13px;font-weight:700;padding:8px 16px;border-radius:5px;border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;}
+
+/* TICKER */
+.ticker-wrap{background:var(--bg2);border-top:1px solid var(--border);padding:4px 10px;flex-shrink:0;display:flex;gap:8px;align-items:center;font-size:10px;overflow:hidden;}
+.ticker-label{font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;color:var(--text3);white-space:nowrap;}
+.ticker-item{font-family:'IBM Plex Mono';white-space:nowrap;}
+.ticker-item.recent{color:var(--green);}
+.ticker-item.sep{color:var(--text3);}
+
+/* SCROLLBAR global */
+::-webkit-scrollbar{width:4px;height:4px;}
+
+/* ═══════════════════════════════════════
+   MOBILE & TABLET RESPONSIVE
+═══════════════════════════════════════ */
+
+/* Tablet: ≤900px */
+@media(max-width:900px){
+  .draft-layout{grid-template-columns:1fr;}
+  .right-panel{display:none;}
+  .my-team-layout{grid-template-columns:1fr;}
+  .my-team-right{border-top:1px solid var(--border);border-right:none;}
+  .intel-body{grid-template-columns:1fr;}
+  .intel-sidebar{display:none;}
+  .auto-cards{grid-template-columns:1fr 1fr;}
+  .hdr-sub{display:none;}
+}
+
+/* Mobile: ≤600px */
+@media(max-width:600px){
+  /* Header */
+  .hdr{height:auto;flex-wrap:wrap;padding:6px 8px;gap:5px;}
+  .hdr-logo{font-size:14px;letter-spacing:2px;}
+  .hdr-sub{display:none;}
+  .badge{font-size:10px;padding:2px 6px;}
+  .hdr-btn{font-size:9px;padding:3px 6px;}
+
+  /* Tabs — scrollable, no wrapping */
+  .tabs{-webkit-overflow-scrolling:touch;}
+  .tab-btn{font-size:11px;padding:8px 10px;letter-spacing:0;}
+
+  /* Body must scroll on mobile, not clip */
+  body{height:auto;min-height:100vh;overflow:auto;}
+  .main{overflow:visible;height:auto;}
+  .tab-panel{height:auto;overflow:visible;}
+  .tab-panel.active{display:block;}
+
+  /* Draft tab — single column, stacked */
+  .draft-layout{grid-template-columns:1fr;height:auto;}
+  .pool{height:70vh;min-height:400px;}
+  .right-panel{display:block;height:auto;border-top:1px solid var(--border);}
+  .roster-scroll{height:60vh;overflow-y:auto;}
+
+  /* Player rows — larger touch targets */
+  .player-row{grid-template-columns:24px 56px 1fr 40px 36px;padding:7px 8px;gap:4px;}
+  .pr-name{font-size:13px;}
+  .pr-draft-btn{padding:4px 8px;font-size:10px;}
+
+  /* Manager grid — 6 cols on mobile (initials only) */
+  .mgr-grid{grid-template-columns:repeat(6,1fr);}
+  .mgr-tab{font-size:9px;padding:5px 2px;}
+  .mgr-rem{display:none;}
+
+  /* Filter buttons — wrappable, larger touch */
+  .filter-btn{padding:4px 10px;font-size:10px;}
+  .pool-search{font-size:13px;padding:6px 8px;}
+
+  /* My Team tab — single column */
+  .my-team-layout{grid-template-columns:1fr;display:block;}
+  .my-team-left{border-right:none;padding:10px;}
+  .my-team-right{border-top:1px solid var(--border);padding:10px;}
+  .team-hero-name{font-size:18px;letter-spacing:2px;}
+  .stat-holes{grid-template-columns:1fr;}
+  .rm-grid{grid-template-columns:repeat(3,1fr);}
+  .rm-num{font-size:16px;}
+
+  /* Intel tab — single column */
+  .intel-layout{height:auto;}
+  .intel-top{flex-direction:column;gap:6px;}
+  .intel-ask{width:100%;padding:10px;}
+  .intel-inp{font-size:14px;padding:9px 10px;}
+  .intel-body{grid-template-columns:1fr;height:auto;}
+  .intel-sidebar{display:none;}
+  .intel-main{padding:8px;gap:6px;height:auto;overflow:visible;}
+  .auto-cards{grid-template-columns:1fr;}
+  .intel-response{min-height:200px;}
+
+  /* Slot rows — tighter on mobile */
+  .slot-row{grid-template-columns:32px 1fr auto;}
+  .slot-pname{font-size:12px;}
+
+  /* Roster header */
+  .roster-hdr{flex-direction:column;gap:6px;}
+  .roster-budget{text-align:left;}
+
+  /* Research tab */
+  .research-tabs{flex-wrap:wrap;gap:4px;}
+  .r-tab{font-size:10px;padding:4px 10px;}
+
+  /* Ticker — stack the log form */
+  .ticker-log-grid{grid-template-columns:1fr 1fr!important;gap:5px!important;}
+
+  /* Modal — full width on mobile */
+  .modal{width:95vw;padding:16px;}
+  .modal-title{font-size:16px;}
+
+  /* Pick order chips — smaller */
+  .pick-chip{font-size:9px;padding:2px 5px;}
+
+  /* Hide non-essential header buttons on very small screens */
+  .hdr-btn.export{display:none;}
+}
+
+/* Very small phones: ≤380px */
+@media(max-width:380px){
+  .tab-btn{font-size:10px;padding:7px 8px;}
+  .hdr-logo{font-size:12px;}
+  .badge{display:none;}
+  .mgr-grid{grid-template-columns:repeat(4,1fr);}
+  .player-row{grid-template-columns:20px 48px 1fr 36px;}
+  .pr-draft-btn{display:none;}
+}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div>
+    <div class="hdr-logo">BOAZ<span> 2026</span></div>
+    <div class="hdr-sub">SWEETWATER KNIGHTS</div>
+  </div>
+  <div class="badge badge-pick" id="pickBadge">PICK #—</div>
+  <div class="badge badge-budget" id="budgetBadge">$75 LEFT</div>
+  <div class="hdr-spacer"></div>
+  <button class="hdr-btn" onclick="exportXLSX()">⬇ EXPORT</button>
+  <button class="hdr-btn" onclick="importFromSpreadsheet()">📂 IMPORT</button>
+  <input type="file" id="importFile" accept=".xlsx" style="display:none" onchange="handleImport(event)">
+  <button class="hdr-btn" onclick="resetDraft()" style="color:var(--red);border-color:var(--red)">↺ RESET</button>
+</div>
+
+<!-- MAIN TABS -->
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('draft')">DRAFT BOARD</button>
+  <button class="tab-btn you-tab" onclick="switchTab('myteam')">⭐ SWEETWATER KNIGHTS</button>
+  <button class="tab-btn" onclick="switchTab('intel')">🧠 INTEL</button>
+  <button class="tab-btn" onclick="switchTab('research')">🔬 RESEARCH</button>
+  <button class="tab-btn" onclick="switchTab('ticker')">📡 LIVE TICKER</button>
+</div>
+
+<!-- MAIN CONTENT -->
+<div class="main">
+
+  <!-- DRAFT TAB -->
+  <div class="tab-panel active" id="tab-draft">
+    <div class="draft-layout">
+      <!-- LEFT: Player Pool -->
+      <div class="pool">
+        <div class="pool-toolbar">
+          <div class="pool-filters" id="posFilters">
+            <button class="filter-btn active" onclick="setFilter('ALL')">ALL</button>
+            <button class="filter-btn" onclick="setFilter('C')">C</button>
+            <button class="filter-btn" onclick="setFilter('1B')">1B</button>
+            <button class="filter-btn" onclick="setFilter('2B')">2B</button>
+            <button class="filter-btn" onclick="setFilter('3B')">3B</button>
+            <button class="filter-btn" onclick="setFilter('SS')">SS</button>
+            <button class="filter-btn" onclick="setFilter('OF')">OF</button>
+            <button class="filter-btn" onclick="setFilter('SP')">SP</button>
+            <button class="filter-btn" onclick="setFilter('RP')">RP</button>
+            <button class="filter-btn" onclick="setFilter('AVAIL')">AVAIL</button>
+          </div>
+          <div class="search-row">
+            <input class="pool-search" id="poolSearch" placeholder="Search players..." oninput="renderPool()">
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;flex-shrink:0">
+              <input type="checkbox" id="hideTaken" onchange="renderPool()" style="accent-color:var(--cyan);width:13px;height:13px;cursor:pointer;">
+              <span style="font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:1px;color:var(--text3)">HIDE DRAFTED</span>
+            </label>
+            <span class="trigger-bar" id="triggerBar">Next trigger: pick #13 ($32+↓$1)</span>
+          </div>
+        </div>
+        <div class="pool-list" id="poolList"></div>
+      </div>
+
+      <!-- RIGHT: Manager Rosters -->
+      <div class="right-panel">
+        <div class="mgr-tabs-wrap">
+          <div class="mgr-grid" id="mgrGrid"></div>
+        </div>
+        <div class="roster-scroll" id="rosterView"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MY TEAM TAB -->
+  <div class="tab-panel" id="tab-myteam">
+    <div class="my-team-layout">
+      <div class="my-team-left" id="myTeamLeft"></div>
+      <div class="my-team-right" id="myTeamRight"></div>
+    </div>
+  </div>
+
+  <!-- INTEL TAB -->
+  <div class="tab-panel" id="tab-intel">
+    <div class="intel-layout">
+      <div class="intel-top">
+        <input class="intel-inp" id="intelInp" placeholder="Ask: theft risk on Arozarena? What should I draft next? Analyze Sam's strategy..." onkeydown="if(event.key==='Enter')runIntel()">
+        <button class="intel-ask" id="intelBtn" onclick="runIntel()">ASK AI</button>
+      </div>
+      <div class="intel-body">
+        <div class="intel-sidebar" id="intelSidebar"></div>
+        <div class="intel-main" id="intelMain">
+          <div class="auto-cards" id="autoCards"></div>
+          <div class="pick-order-bar" id="pickOrderBar"></div>
+          <div class="intel-response" id="intelContent">
+            <div style="color:var(--text3);font-size:12px">Ask anything about the draft — theft risk, who to target, manager analysis, budget strategy. The AI knows every manager's 10-year draft history and current roster state.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RESEARCH TAB -->
+  <div class="tab-panel" id="tab-research">
+    <div class="research-layout">
+      <div class="research-tabs">
+        <button class="r-tab active" onclick="switchResearch('value')">📊 VALUE RANKINGS</button>
+        <button class="r-tab" onclick="switchResearch('prospects')">🌟 TOP PROSPECTS</button>
+        <button class="r-tab" onclick="switchResearch('roster')">📋 ROSTER MGMT</button>
+      </div>
+      <div class="research-body">
+        <div class="r-panel active" id="r-value">
+          <button class="research-run-btn" id="valueBtn" onclick="runValueResearch()">🔬 RUN VALUE ANALYSIS</button>
+          <div id="valueResults"></div>
+        </div>
+        <div class="r-panel" id="r-prospects">
+          <button class="research-run-btn" id="prospectBtn" onclick="runProspectResearch()">🌟 GENERATE PROSPECT RANKINGS</button>
+          <div id="prospectResults"></div>
+        </div>
+        <div class="r-panel" id="r-roster">
+          <button class="research-run-btn" id="rosterMgmtBtn" onclick="runRosterMgmt()">📋 ANALYZE ROSTER CONSTRUCTION</button>
+          <div id="rosterMgmtResults"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TICKER TAB -->
+  <div class="tab-panel" id="tab-ticker">
+    <div style="width:100%;height:100%;overflow-y:auto;padding:12px;">
+      <div style="font-family:'Rajdhani';font-size:14px;font-weight:700;letter-spacing:2px;color:var(--cyan);margin-bottom:10px;">📡 LIVE DRAFT TICKER</div>
+      <div style="font-size:11px;color:var(--text2);margin-bottom:12px;">Enter picks as they come in via email. The app automatically recalculates draft position, theft risk, and strategy after each pick.</div>
+      <div style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:10px;margin-bottom:10px;">
+        <div style="font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:6px;">LOG A PICK</div>
+        <div class="ticker-log-grid" style="display:grid;grid-template-columns:1fr 120px 80px 60px;gap:6px;margin-bottom:6px;">
+          <input id="tickerPlayer" class="pool-search" placeholder="Player name..." style="font-size:12px;padding:5px 8px;">
+          <select id="tickerMgr" class="pool-search" style="font-size:12px;padding:5px 8px;"></select>
+          <input id="tickerPrice" class="pool-search" placeholder="$Price" type="number" style="font-size:12px;padding:5px 8px;">
+          <button onclick="logPick()" style="background:var(--green);border:none;border-radius:4px;color:var(--bg);font-family:'Rajdhani';font-weight:800;font-size:11px;cursor:pointer;">LOG</button>
+        </div>
+        <div style="font-size:10px;color:var(--text3);">This marks the player as taken, updates the manager's roster and budget, and advances the pick counter.</div>
+      </div>
+      <div id="tickerLog" style="display:flex;flex-direction:column;gap:4px;"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- DRAFT PICK MODAL -->
+<div class="modal-overlay" id="draftModal">
+  <div class="modal">
+    <div class="modal-title">DRAFT PICK</div>
+    <div id="modalPlayerInfo" style="background:var(--bg3);border:1px solid var(--border2);border-radius:5px;padding:8px;margin-bottom:12px;font-size:12px;color:var(--text2);"></div>
+    <div class="modal-field">
+      <label class="modal-label">MANAGER</label>
+      <select class="modal-inp" id="modalMgr"></select>
+    </div>
+    <div class="modal-field">
+      <label class="modal-label">ROUND</label>
+      <input class="modal-inp" id="modalRound" type="number" min="1" max="30">
+    </div>
+    <div class="modal-field">
+      <label class="modal-label">PRICE PAID</label>
+      <input class="modal-inp" id="modalPrice" type="number" min="1">
+    </div>
+    <div class="modal-btns">
+      <button class="modal-cancel" onclick="closeModal()">CANCEL</button>
+      <button class="modal-confirm" onclick="confirmDraft()">CONFIRM PICK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════
+
+const DRAFT_ORDER = ['FR','JK','MB','MV','GE','JE','AM','JW','CS','PA','SS','BF'];
+const BUDGET = 285;
+const TRIGGERS = [
+  {pick:13,threshold:32},{pick:25,threshold:23},{pick:37,threshold:21},
+  {pick:60,threshold:19},{pick:77,threshold:15},{pick:107,threshold:11},
+  {pick:123,threshold:7},{pick:139,threshold:6},{pick:162,threshold:5},
+  {pick:192,threshold:4},{pick:242,threshold:3}
+];
+
+const MGR_META = {
+  FR:{name:'Frank',full:'Frank Rhee',you:false,jordan:false},
+  JK:{name:'Jonah',full:'Jonah Kruvant',you:false,jordan:false},
+  MB:{name:'Michael',full:'Michael Bukalo',you:false,jordan:false},
+  MV:{name:'Marcus',full:'Marcus Vanderberg',you:false,jordan:false},
+  GE:{name:'Greg',full:'Greg Eisenman',you:true,jordan:false},
+  JE:{name:'Jordan',full:'Jordan Enoch',you:false,jordan:true},
+  AM:{name:'Adam',full:'Adam Morley',you:false,jordan:false},
+  JW:{name:'Jeff',full:'Jeff Wachter',you:false,jordan:false},
+  CS:{name:'Charles',full:'Charles Silverman',you:false,jordan:false},
+  PA:{name:'Pete',full:'Peter Ambrosio',you:false,jordan:false},
+  SS:{name:'Sam',full:'Sam Schneider',you:false,jordan:false},
+  BF:{name:'Ben',full:'Benjamin Friedman',you:false,jordan:false},
+};
+
+const SAVANT_IDS = {
+  'Juan Soto':665742,'Paul Skenes':745302,'Bobby Witt Jr.':677951,
+  'Logan Webb':657277,'Austin Riley':663586,'Randy Arozarena':668227,
+  'Devin Williams':642547,'Zach Neto':694497,'Davis Baldwin':681911,
+  'Jesus Luzardo':641703,'Tatsuya Imai':807982,
+  'Kyle Tucker':663656,'Fernando Tatis Jr.':665489,'Julio Rodriguez':677594,
+  'Gunnar Henderson':683002,'Vladimir Guerrero Jr.':665489,
+  'Corbin Carroll':682998,'Ketel Marte':606466,'Francisco Lindor':596019,
+  'Logan Gilbert':669302,'Yordan Alvarez':670541,'Manny Machado':592518,
+  'Max Fried':600482,'Hunter Greene':668881,'Trea Turner':607208,
+  'Cody Bellinger':641355,'Edwin Diaz':621242,'Mookie Betts':605141,
+  'Jackson Merrill':694492,'Joe Ryan':657210,'Rafael Devers':646240,
+  'Dylan Cease':656302,'Freddy Peralta':642547,'CJ Abrams':682928,
+  'Corey Seager':608369,'Riley Greene':682985,'Bo Bichette':666182,
+  'Josh Hader':623352,'Nick Pivetta':601713,'Jose Altuve':514888,
+  'Josh Naylor':647304,'Blake Snell':605483,'Jackson Holliday':694192,
+  'Gleyber Torres':650402,'Jorge Polanco':553869,'Willy Adames':642715,
+  'Brandon Lowe':666971,'Pete Fairbanks':669456,'Matt McLain':694108,
+  'Jhoan Duran':678422,'Framber Valdez':664285,'Royce Lewis':668145,
+  'Seiya Suzuki':673548,'Rafael Devers':646240,'Spencer Torkelson':679525,
+  'Jacob Misiorowski':700720,'David Bednar':669330,'George Kirby':669923,
+  'Nolan McLean':694037,'Cam Schlittler':694053,'Bryson Stott':681082,
+  'Brenton Doyle':683737,'Francisco Alvarez':692352,'Ryan Weathers':676896,
+  'Adley Rutschman':668939,'Justin Crawford':694097,'Jeff Hoffman':670986,
+  'Michael Harris II':678428,'Alex Bregman':608648,'Zack Wheeler':554430,
+  'Kevin Gausman':592332,'Nick Pivetta':601713,'Chris Sale':519242,
+  'Gerrit Cole':543037,'Aaron Judge':592450,'Pete Crow-Armstrong':680686,
+  'Bryan Turang':680757,'Bryson Stott':681082,
+};
+
+function savantUrl(name) {
+  const id = SAVANT_IDS[name];
+  if (id) {
+    const slug = name.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/ /g,'-');
+    return `https://baseballsavant.mlb.com/savant-player/${slug}-${id}`;
+  }
+  const q = encodeURIComponent(name);
+  return `https://baseballsavant.mlb.com/savant-player/search?query=${q}`;
+}
+
+const PLAYER_STATS = {
+  'Juan Soto':{ab:18,avg:'.278',hr:1,rbi:4,sb:0,note:'ST'},
+  'Paul Skenes':{era:'1.80',ip:'10.0',k:12,bb:2,note:'ST'},
+  'Logan Webb':{era:'2.25',ip:'8.0',k:7,bb:1,note:'ST'},
+  'Randy Arozarena':{ab:22,avg:'.318',hr:2,rbi:5,sb:1,note:'ST'},
+  'Devin Williams':{era:'0.00',ip:'4.1',k:6,bb:1,note:'ST'},
+  'Jesus Luzardo':{era:'3.60',ip:'5.0',k:6,bb:2,note:'ST'},
+  'Austin Riley':{ab:15,avg:'.267',hr:1,rbi:3,sb:0,note:'ST'},
+  'Tatsuya Imai':{era:'4.50',ip:'6.0',k:7,bb:3,note:'ST'},
+  'Zach Neto':{ab:20,avg:'.300',hr:1,rbi:3,sb:2,note:'ST'},
+};
+
+const JORDAN_JABS = [
+  "Jordan tried to draft Dennis Santana. Already taken. $76 left.",
+  "Jordan paid $64 for Trout in 2019. Still processing.",
+  "Everyone checks if Jordan is asleep before picking.",
+  "Jordan called Freeman 'The Traitor.' His picks are equally theatrical.",
+  "'Is Jordan already asleep?' — Frank Rhee, 8:02 PM. A timeless question.",
+  "Jordan has $76 left. He's a spectator in any serious bidding war.",
+  "Jordan's roster is strong. His wallet is not.",
+  "Jordan: strong conviction, weak execution. The Dennis Santana incident lives forever.",
+];
+
+const MGR_PROFILES = {
+  GE:{nickname:"The Franchise Builder",spendSplit:"Hitters 60% | SP 29% | RP 11%",traits:["Franchise-player-first architect","Soto keeper at escalating prices — conviction not loyalty","Premium SS/OF targeting","Never punts saves — carries 2-3 closers","Thin 1B/2B historically"],historicAnchors:"Soto $46→$57 (4yrs), Skenes $6→$11, Webb $27, Lindor $38→$40, Bichette $32→$37",emailVoice:"Strategic. Pre-arranged Devin Williams mid-dinner. Always watching Jordan.",blindspot:"Commits one year too long on aging players (Bumgarner x3)",threatLevel:"YOU — build around the Soto/Skenes/Webb foundation"},
+  FR:{nickname:"The Veteran Corner Power Anchor",spendSplit:"Hitters 65% | SP 24% | RP 11%",traits:["Elite corner infielders every year","SP loyalty: Nola/Wheeler/Yamamoto recurring","Almost never spends big on closers","Will overpay for pedigree players past their prime","2025 shift: adding real pitching alongside corner power"],historicAnchors:"Trout $50/$55, Freeman $39/$44/$49, Acuna $45/$50, Tatis $41, Witt Jr $51",emailVoice:"Commissioner. Terse. Sends spreadsheets. 'Jonah still spot.' Never panics.",blindspot:"Last to abandon declining veterans — Freeman and Acuna past optimal windows",threatLevel:"HIGH — $113 left. Coming hard for Logan Gilbert ($34) as SP anchor."},
+  JK:{nickname:"The Infield Accumulator",spendSplit:"Hitters 65% | SP 26% | RP 10%",traits:["Builds entire infield first, fills around it","Bids competitively on multiple MI positions","One mid-tier SP anchor then streams","Rarely spends on closers","Gives players bizarre nicknames (JJ Partly Cloudy Wetherholt)"],historicAnchors:"Witt Jr $51, Guerrero $32, Seager $33/$37, Freeman $40→$44, Arenado $38",emailVoice:"One-line picks from iPhone. Bizarre nicknames. 'Morley = Spot.'",blindspot:"Burns budget too fast competing for infielders — nothing left for pitching depth",threatLevel:"MEDIUM — $104 left. Will target elite SS/2B/3B. Has Witt — now wants the full infield."},
+  MB:{nickname:"The Power Maximizer",spendSplit:"Hitters 64% | SP 27% | RP 9%",traits:["Historically biggest single-player overpayer in league","Harper $54 in 2022 — highest price in dataset history","Recent pivot to balanced builds (2024-2025)","Most dangerous manager with $140 and no obvious anchor target","Email: calls Morley 'cucked out wage slave' within 7 hours of draft start"],historicAnchors:"Harper $39→$54, Henderson $41, Sale $36/$41, Verlander $29",emailVoice:"'Cucked out wage slave = spot.' First pick Gunnar Henderson, no explanation.",blindspot:"When he commits he massively over-commits — rest of roster suffers",threatLevel:"HIGH — $140 left, most balanced build of career. No obvious target = most dangerous."},
+  MV:{nickname:"The Contrarian Power Hunter",spendSplit:"Hitters 62% | SP 27% | RP 11%",traits:["Highest year-to-year variance in league","Drawn to players market discounts for age/injury","Paid $54 for Ohtani — loves unique skill profiles","Scherzer appeared 4 separate years","Needs 2B and OF heavily in 2026"],historicAnchors:"Ohtani $54, Scherzer $37/$42, Freeman $40, Trout $45, Cabrera $38",emailVoice:"Signs emails with cell number. Lurks. Minimal banter. 'Mookie Betts.'",blindspot:"Pays for ceiling that sometimes doesn't materialize — Cabrera $38 in down year",threatLevel:"MEDIUM — $93 left. Looking for 'unique player' gamble. High threat for Cruz, Caglianone."},
+  JE:{nickname:"The Veteran Grinder",spendSplit:"Hitters 63% | SP 27% | RP 10%",traits:["Paid $64 for Trout in 2019 — ego-driven bidding at its peak","Now builds around two elite veterans (paired approach)","Added real SP investment since 2022","Tried to draft already-taken Dennis Santana","Everyone checks if he's asleep before picking"],historicAnchors:"Trout $59/$64, Ramirez $41/$46, Betts $46, Alvarez $39, Freeman $28",emailVoice:"Dramatic epithets. Defensive. 'Freddie The Traitor Freeman.' Occasionally asleep.",blindspot:"Historical ego bidding — will overpay when pride is engaged",jabLines:["Jordan tried to draft Dennis Santana. Already taken. $76 left.","Jordan paid $64 for Trout. Still the most expensive mistake in Boaz history.","'Is Jordan already asleep?' — Frank Rhee. A timeless question.","Jordan has $76. He is a spectator in any bidding war you're in.","Jordan's roster is loaded. His wallet is not. He's done."],threatLevel:"LOW — $76 left, roster already full. Picking at value only."},
+  AM:{nickname:"The Volatile Loyalty Player",spendSplit:"Hitters 65% | SP 27% | RP 8%",traits:["Rode Rizzo 4 years, JD Martinez 3 years, Rendon 3 years","Loyalty carried past optimal return every time","14 years self-employed, just became a wage slave — announced in giant iPhone text","Jake Burger $1 in honor of clocking out","$114 left — dangerous if he locks on a target"],historicAnchors:"Rizzo $39/$44/$49, Martinez $42/$47, Rendon $21/$31/$36, Vlad Jr $27/$32",emailVoice:"'Social network is great and dolly is a big titted saint.' References Dolly Parton and picks Jake Burger in same email.",blindspot:"Stays on declining players too long — loyalty past optimal return every time",threatLevel:"MEDIUM-HIGH — $114 left, unpredictable. Could own any conversation."},
+  JW:{nickname:"The Statcast Purist",spendSplit:"Hitters 67% | SP 25% | RP 8%",traits:["Elite anchor every year (Trout x3, Acuna x2, Alvarez, Tucker x2)","Identifies undervalued contact hitters $18-25","Systematically punts saves — lowest RP spend in league","Pays market or above — never waits for value"],historicAnchors:"Trout $48/$58, Tucker $46, Alvarez $33, Acuna $42/$46, Tatis $42",emailVoice:"Efficient. 'CJ Abrams, 20.' No drama, just picks.",blindspot:"Chronically last in saves. Accepts it as a trade-off.",threatLevel:"HIGH — $103 left. Has Tucker. Needs OF/2B. Will pay market for Butler, Cruz, any EV outlier."},
+  CS:{nickname:"The Contact/Power Accumulator",spendSplit:"Hitters 73% | SP 15% | RP 12%",traits:["73% on hitters — highest in league","Altuve x3 escalating, Machado x4, Goldschmidt x5","Chronically underspends on pitching (SP: $9 in 2022)","$79 RP spend in 2025 — dramatic inversion, may be one-year blip","'The email draft used to be fun until someone spoiled it'"],historicAnchors:"Goldschmidt $23→$38, Altuve $44/$49/$54, Machado $27→$42, Tatis $37/$42",emailVoice:"'BTW, I was going after Morley with my hilariously clever and sardonic comments.' Explains his own jokes.",blindspot:"Pitcher famine — rotation chronically neglected",threatLevel:"LOW-MEDIUM — $74 left. Will outbid for specific hitter type (corner bats). Predictable."},
+  PA:{nickname:"The Two-Anchor System",spendSplit:"Hitters 60% | SP 28% | RP 12%",traits:["One elite hitter + one elite pitcher EVERY year for 10 years","Gerrit Cole: 5 straight appearances ($35-$42)","Aaron Judge + Cole for 3 straight years","Every pick announced as a monologue — 'it is with a heavy heart...'","Unique catcher fascination: Rutschman/Will Smith appear repeatedly"],historicAnchors:"Judge $51, Cole $35/$40/$42 (5yrs), Yelich $42/$47, Kershaw $36→$46, Scherzer $42",emailVoice:"'It is with a heavy heart that I select...' Every pick is an Oscar speech.",blindspot:"Front-loads so heavily that depth barely exists after two anchors",threatLevel:"HIGH for Judge/Cole specifically. $70 left — budget may actually stop him."},
+  SS:{nickname:"The Prospect Specialist",spendSplit:"Hitters 68% | SP 25% | RP 7%",traits:["No single player type — has a value philosophy","Pays market for anchors, finds excellent value at $8-15","Best in league at identifying correct price tier for mid-range players","Most willing to take developmental/prospect players","4 championships — legitimately elite manager"],historicAnchors:"Lindor $46/$51, Ramirez $45/$50, Turner $43/$46, Tucker $46, Freeman+Riley",emailVoice:"'Lindor. Ben=Spot.' Sam does not waste words. Sam is dangerous.",blindspot:"Anchor prices never discounted — pays fair market, not below",threatLevel:"HIGH in $5-15 range — will find value others miss. Primary threat for Daylen Lile, mid-OF."},
+  BF:{nickname:"The Superstar Loyalist",spendSplit:"Hitters 68% | SP 20% | RP 12%",traits:["Trea Turner 4 straight years ($46→$61)","Mookie Betts 4 straight years ($40→$50)","$61 for Turner in 2022 — highest price in entire 10-year dataset","5 championships — most in league","Once anchor secured, rest of draft is very pragmatic"],historicAnchors:"Turner $46/$51/$56/$61, Betts $40/$45/$50 (3yrs+), Hader $23/$28, Diaz $24",emailVoice:"'Only thing in my files is a consistent track record of beating you :)' Unbothered. 5 rings.",blindspot:"Entire strategy hinges on anchor — if anchor busts, season is over",jabLines:["Ben has 5 championships and named his team 'Fat Earth Conspiracy.' He is not to be trusted.","The Friedman Files are real. We don't know what's in them. Ben is winning anyway.","Ben picked Kevin McGonigle for $2. The Friedman Files explain everything."],threatLevel:"MEDIUM — $106 left. Has Betts $50 keeper. Looking for power/speed + closer $18-22."},
+};
+
+// ═══════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════
+let S = {
+  currentPick: 93,
+  posFilter: 'ALL',
+  activeMgr: 'GE',
+  pool: [],
+  managers: {},
+  pickLog: [],
+};
+
+function initState() {
+  // Pool
+  S.pool = INIT_PLAYERS.map((p,i) => ({...p, id:i, cur: p.price, taken: p.taken}));
+
+  // Managers
+  const remMap = {FR:113,JK:104,MB:140,MV:93,GE:75,JE:76,AM:114,JW:103,CS:74,PA:70,SS:58,BF:106};
+  for (const [id, data] of Object.entries(INIT_MANAGERS)) {
+    S.managers[id] = {
+      players: data.roster.map(p => ({...p})),
+      spent: BUDGET - (remMap[id] || 0),
+      remaining: remMap[id] || 0,
+      budget: BUDGET,
+    };
+  }
+
+  // Mark taken players
+  syncTaken();
+}
+
+function syncTaken() {
+  const takenNames = new Set();
+  for (const m of Object.values(S.managers)) {
+    for (const p of m.players) takenNames.add(p.name.toLowerCase().trim());
+  }
+  for (const p of S.pool) {
+    const nameLower = p.name.toLowerCase().trim();
+    p.taken = takenNames.has(nameLower) || p.taken;
+  }
+}
+
+function saveState() {
+  try { localStorage.setItem('boaz26_v3', JSON.stringify({managers:S.managers,pool:S.pool,currentPick:S.currentPick,pickLog:S.pickLog})); } catch(e){}
+}
+
+function loadState() {
+  try {
+    const saved = localStorage.getItem('boaz26_v3');
+    if (saved) {
+      const d = JSON.parse(saved);
+      S.managers = d.managers;
+      S.pool = d.pool;
+      S.currentPick = d.currentPick || 93;
+      S.pickLog = d.pickLog || [];
+      return true;
+    }
+  } catch(e){}
+  return false;
+}
+
+// ═══════════════════════════════════════
+// TRIGGERS
+// ═══════════════════════════════════════
+function calcPrice(basePrice, pickNum) {
+  let price = basePrice;
+  let drops = 0;
+  for (const t of TRIGGERS) {
+    if (pickNum > t.pick && basePrice >= t.threshold) drops++;
+  }
+  return Math.max(1, price - drops);
+}
+
+function updatePrices() {
+  for (const p of S.pool) p.cur = calcPrice(p.price, S.currentPick);
+}
+
+function nextTrigger() {
+  return TRIGGERS.find(t => S.currentPick <= t.pick);
+}
+
+// ═══════════════════════════════════════
+// DRAFT ORDER MATH
+// ═══════════════════════════════════════
+function buildDraftOrder() {
+  const picks = [];
+  const totalRounds = 30;
+  for (let r = 1; r <= totalRounds; r++) {
+    const order = r % 2 === 1 ? [...DRAFT_ORDER] : [...DRAFT_ORDER].reverse();
+    for (let i = 0; i < order.length; i++) {
+      picks.push({pick: (r-1)*12 + i + 1, mgr: order[i], round: r});
+    }
+  }
+  return picks;
+}
+
+function whoPicksBeforeGreg(roundOffset=0) {
+  const allPicks = buildDraftOrder();
+  const gregNextPick = allPicks.find(p => p.mgr === 'GE' && p.pick >= S.currentPick + roundOffset*12);
+  if (!gregNextPick) return [];
+  const before = allPicks.filter(p => p.pick < gregNextPick.pick && p.pick >= S.currentPick && p.mgr !== 'GE');
+  return before.slice(-4); // last 4 before Greg
+}
+
+// ═══════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════
+function render() {
+  updatePrices();
+  renderHeader();
+  renderMgrGrid();
+  renderPool();
+  renderRoster();
+  renderAutoIntel();
+  renderIntelSidebar();
+  renderMyTeam();
+  renderPickOrderBar();
+  renderTickerMgrSelect();
+  renderTickerLog();
+}
+
+function renderHeader() {
+  const ge = S.managers['GE'];
+  document.getElementById('pickBadge').textContent = `PICK #${S.currentPick}`;
+  document.getElementById('budgetBadge').textContent = `$${ge.remaining} LEFT`;
+  const t = nextTrigger();
+  document.getElementById('triggerBar').innerHTML = t
+    ? `Next trigger: <span class="trigger-active">pick #${t.pick}</span> ($${t.threshold}+↓$1)`
+    : 'All triggers passed';
+}
+
+function renderMgrGrid() {
+  const html = DRAFT_ORDER.map(id => {
+    const meta = MGR_META[id];
+    const m = S.managers[id];
+    const remCls = m.remaining < 40 ? 'broke' : m.remaining < 70 ? 'tight' : '';
+    const youCls = meta.you ? 'you' : '';
+    const jordanCls = meta.jordan ? 'jordan' : '';
+    const activeCls = S.activeMgr === id ? 'active' : '';
+    return `<div class="mgr-tab ${youCls} ${jordanCls} ${activeCls}" onclick="setActiveMgr('${id}')">
+      ${meta.name}
+      <span class="mgr-rem" style="color:${m.remaining<40?'var(--red)':m.remaining<70?'var(--yellow)':'var(--text3)'}">$${m.remaining}</span>
+    </div>`;
+  }).join('');
+  document.getElementById('mgrGrid').innerHTML = html;
+}
+
+function setActiveMgr(id) {
+  S.activeMgr = id;
+  renderMgrGrid();
+  renderRoster();
+}
+
+function setFilter(f) {
+  S.posFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.textContent===f));
+  renderPool();
+}
+
+function renderPool() {
+  const search = document.getElementById('poolSearch').value.toLowerCase();
+  const f = S.posFilter;
+  const hideTaken = document.getElementById('hideTaken')?.checked;
+
+  let items = S.pool.filter(p => {
+    if (hideTaken && p.taken) return false;
+    if (f === 'AVAIL') return !p.taken;
+    if (f !== 'ALL') { if (!p.pos.includes(f)) return false; }
+    if (search) { if (!p.name.toLowerCase().includes(search) && !p.team.toLowerCase().includes(search)) return false; }
+    return true;
+  });
+
+  const html = items.slice(0,200).map(p => {
+    const takenCls = p.taken ? 'taken' : '';
+    const stats = PLAYER_STATS[p.name];
+    let statStr = '';
+    if (stats) {
+      statStr = stats.era ? `<span class="stat-chip">${stats.era} ERA ${stats.k}K</span>` : `<span class="stat-chip">${stats.avg} ${stats.hr}HR ${stats.sb}SB</span>`;
+    }
+    return `<div class="player-row ${takenCls}" onclick="openSavant('${p.name.replace(/'/g,"\\'")}')">
+      <div class="pr-rank">${p.rank}</div>
+      <div><span class="pr-pos">${p.pos.split('/')[0]}</span></div>
+      <div>
+        <div class="pr-name">${p.name}</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="pr-team">${p.team}</span>
+          ${statStr}
+          ${p.taken ? '<span style="font-size:9px;color:var(--text3)">TAKEN</span>' : ''}
+        </div>
+      </div>
+      <div class="pr-price">$${p.cur}</div>
+      <div>${p.taken ? '' : `<button class="pr-draft-btn" onclick="event.stopPropagation();openDraftModal(${p.id})">DRAFT</button>`}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('poolList').innerHTML = html || '<div style="padding:20px;color:var(--text3);text-align:center;font-size:12px">No players found</div>';
+}
+
+function openSavant(name) {
+  window.open(savantUrl(name), '_blank');
+}
+
+// ROSTER SLOTS
+const HITTER_SLOTS = ['C','C','1B','2B','3B','SS','CI','MI','OF','OF','OF','OF','OF','UTIL'];
+const PITCHER_SLOTS = ['SP','SP','SP','SP','SP','RP','RP','RP','P','P','P','P','P','P','P'];
+const BENCH_SLOTS = ['B','B','B','B','B','B','B'];
+const IL_SLOTS = ['IL','IL'];
+
+function assignToSlots(players) {
+  const res = {
+    hitters: Array(HITTER_SLOTS.length).fill(null),
+    pitchers: Array(PITCHER_SLOTS.length).fill(null),
+    bench: Array(BENCH_SLOTS.length).fill(null),
+    il: Array(IL_SLOTS.length).fill(null),
+  };
+  const rem = [...players];
+  const used = new Set();
+
+  function tryFill(slots, arr, match) {
+    slots.forEach((slot, i) => {
+      if (arr[i]) return;
+      const idx = rem.findIndex((p,j) => !used.has(j) && match(p.pos, slot));
+      if (idx >= 0) { arr[i] = rem[idx]; used.add(idx); }
+    });
+  }
+
+  const pitchers = rem.filter((_,i) => players[i]?.pos?.includes('SP') || players[i]?.pos?.includes('RP') || players[i]?.pos === 'P');
+  const hitters = rem.filter((_,i) => !pitchers.includes(rem[i]));
+
+  tryFill(HITTER_SLOTS, res.hitters, (pos,slot) => {
+    if (slot==='CI') return pos.includes('1B')||pos.includes('3B');
+    if (slot==='MI') return pos.includes('2B')||pos.includes('SS');
+    if (slot==='UTIL') return !pos.includes('SP')&&!pos.includes('RP');
+    return pos.includes(slot);
+  });
+  tryFill(PITCHER_SLOTS, res.pitchers, (pos,slot) => {
+    if (slot==='P') return pos.includes('SP')||pos.includes('RP');
+    return pos.includes(slot);
+  });
+
+  // remaining to bench
+  let benchIdx = 0;
+  rem.forEach((p,i) => { if (!used.has(i) && benchIdx < BENCH_SLOTS.length) { res.bench[benchIdx++] = p; used.add(i); } });
+  return res;
+}
+
+function renderSlot(slotLabel, player) {
+  const lbl = `<div class="slot-label">${slotLabel}</div>`;
+  if (!player) return `<div class="slot-row">${lbl}<div class="slot-empty">— empty —</div></div>`;
+  const kBadge = player.keeper ? `<span class="slot-pbadge slot-k">K</span>` : '';
+  const rdBadge = player.round ? `<span class="slot-pbadge" style="color:var(--text3)">${player.round}</span>` : '';
+  return `<div class="slot-row">
+    ${lbl}
+    <div class="slot-player" onclick="openSavant('${player.name.replace(/'/g,"\\'")}')">
+      <span class="slot-pname">${player.name}</span>
+      ${kBadge}${rdBadge}
+    </div>
+    <span class="slot-price">$${player.price}</span>
+  </div>`;
+}
+
+function renderRoster() {
+  const id = S.activeMgr;
+  const mgr = S.managers[id];
+  const meta = MGR_META[id];
+  const prof = MGR_PROFILES[id];
+  if (!mgr) return;
+
+  const picksLeft = 31 - mgr.players.length;
+  const perPick = picksLeft > 0 ? (mgr.remaining / picksLeft).toFixed(1) : '0';
+  const spentPct = Math.min(100, (mgr.spent / BUDGET) * 100);
+  const remCls = mgr.remaining < 40 ? 'broke' : mgr.remaining < 70 ? 'tight' : '';
+  const nameCls = meta.you ? 'you' : meta.jordan ? 'jordan' : '';
+
+  const assigned = assignToSlots(mgr.players);
+  const jordanJab = meta.jordan ? `<div class="jordan-jab">💀 ${JORDAN_JABS[Math.floor(Math.random()*JORDAN_JABS.length)]}</div>` : '';
+  const nickname = prof && !meta.you ? `<div class="roster-nickname">${prof.nickname}</div>` : '';
+  const intelBtn = !meta.you ? `<button class="intel-btn-sm" onclick="showMgrProfile('${id}')">🧠 INTEL</button>` : '';
+
+  document.getElementById('rosterView').innerHTML = `
+    <div class="roster-hdr">
+      <div>
+        <div class="roster-name ${nameCls}">${meta.full}${meta.you?' ⭐':''}</div>
+        ${nickname}
+        <div style="font-size:9px;color:var(--text3);margin-top:2px">${mgr.players.length} players · ${picksLeft} picks left · $${perPick}/pick</div>
+        ${intelBtn}
+      </div>
+      <div class="roster-budget">
+        <div class="roster-rem ${remCls}">$${mgr.remaining}</div>
+        <div style="font-size:9px;color:var(--text3)">remaining</div>
+      </div>
+    </div>
+    <div class="budget-bar"><div class="budget-fill ${remCls}" style="width:${100-spentPct}%"></div></div>
+    ${jordanJab}
+    <div class="sec-hdr">HITTERS</div>
+    ${HITTER_SLOTS.map((s,i) => renderSlot(s, assigned.hitters[i])).join('')}
+    <div class="sec-hdr">PITCHERS</div>
+    ${PITCHER_SLOTS.map((s,i) => renderSlot(s, assigned.pitchers[i])).join('')}
+    <div class="sec-hdr">BENCH</div>
+    ${BENCH_SLOTS.map((s,i) => renderSlot(s, assigned.bench[i])).join('')}
+    <div class="sec-hdr">INJURED LIST</div>
+    ${IL_SLOTS.map((s,i) => renderSlot(s, assigned.il[i])).join('')}
+  `;
+}
+
+// ═══════════════════════════════════════
+// MY TEAM TAB
+// ═══════════════════════════════════════
+function renderMyTeam() {
+  const ge = S.managers['GE'];
+  const roster = ge.players;
+
+  // Stat hole analysis
+  const hitters = roster.filter(p => !p.pos.includes('SP') && !p.pos.includes('RP'));
+  const pitchers = roster.filter(p => p.pos.includes('SP') || p.pos.includes('RP'));
+  const sp = pitchers.filter(p => p.pos.includes('SP'));
+  const rp = pitchers.filter(p => p.pos.includes('RP'));
+
+  const hasC = hitters.some(p => p.pos.includes('C'));
+  const has1B = hitters.some(p => p.pos.includes('1B'));
+  const has2B = hitters.some(p => p.pos.includes('2B'));
+  const has3B = hitters.some(p => p.pos.includes('3B'));
+  const hasSS = hitters.some(p => p.pos.includes('SS'));
+  const ofCount = hitters.filter(p => p.pos.includes('OF')).length;
+  const hasCloser = rp.length > 0;
+
+  // Stat category hole analysis
+  const sbSources = hitters.filter(p => ['Neto','Arozarena','Laureano'].some(n => p.name.includes(n)));
+  const closers = rp.filter(p => ['Williams','Helsley','Munoz','Diaz','Bednar','Jansen'].some(n => p.name.includes(n)));
+  const powerBats = hitters.filter(p => ['Soto','Riley','Baldwin'].some(n => p.name.includes(n)));
+  const sbCount = sbSources.length;
+  const svCount = closers.length;
+
+  // Severity helpers
+  const bad = (title, msg) => `<div class="stat-hole-card"><div class="sh-title sh-bad">⚠ ${title}</div><div style="font-size:10px;color:var(--text2);margin-top:2px">${msg}</div></div>`;
+  const warn = (title, msg) => `<div class="stat-hole-card"><div class="sh-title sh-warn">△ ${title}</div><div style="font-size:10px;color:var(--text2);margin-top:2px">${msg}</div></div>`;
+  const good = (title, msg) => `<div class="stat-hole-card"><div class="sh-title sh-good">✓ ${title}</div><div style="font-size:10px;color:var(--text2);margin-top:2px">${msg}</div></div>`;
+
+  const needsHtml = [
+    // --- POSITIONAL HOLES ---
+    !has2B ? bad('2B VACANT', 'No 2B eligible player — biggest positional gap. Target: Altuve, Albies, Torres, Lowe') : '',
+    !has1B && !hitters.some(p=>p.pos.includes('CI')) ? warn('1B THIN', 'Walker is a depth piece only. Consider upgrade at 1B/CI slot') : '',
+    ofCount < 4 ? warn(`OF THIN (${ofCount}/5)`, `Need ${5-ofCount} more outfielders to fill all OF slots`) : '',
+    rp.length < 2 ? bad('RP THIN', `Only ${rp.length} reliever(s). Need 2-3 for saves/holds`) : '',
+    sp.length < 4 ? warn(`SP THIN (${sp.length})`, 'Target 4-5 starters for full week coverage') : '',
+    // --- STAT CATEGORY HOLES ---
+    sbCount < 2 ? bad('SB DEFICIT', `Projected ~60 SB — bottom 2 in league. SB is your biggest roto weakness. Priority: Cruz, Kwan, Lile, any speed OF`) : (sbCount < 3 ? warn('SB MODERATE', 'SB is below average. One more speed source recommended') : ''),
+    svCount < 2 ? warn('SAVES THIN', `${svCount} proven closer(s). Williams is anchor but need a 2nd. Dominguez role unclear in CWS`) : '',
+    !has2B ? warn('AVG AT RISK', 'No 2B hurts AVG depth — position skews toward low-average profiles') : '',
+    // --- STRENGTHS (reinforcement) ---
+    sp.length >= 3 ? good('PITCHING ELITE', `${sp.length} SP + ${rp.length} RP — ERA/K/W are your category anchors`) : '',
+    hitters.some(p=>p.name.includes('Soto')) ? good('POWER/OBP ANCHOR', 'Soto + Riley give elite AVG/HR/RBI foundation') : '',
+  ].filter(Boolean).join('');
+
+  const assigned = assignToSlots(roster);
+
+  document.getElementById('myTeamLeft').innerHTML = `
+    <div class="team-hero">
+      <div class="team-hero-name">⚔ SWEETWATER KNIGHTS</div>
+      <div class="team-hero-sub">Greg Eisenman · Pick #5 in draft order · $${ge.remaining} remaining · ${roster.length} players</div>
+    </div>
+    <div style="font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:2px;color:var(--red);margin-bottom:6px">NEEDS & HOLES</div>
+    <div class="stat-holes">${needsHtml || '<div style="color:var(--green);font-size:11px">Looking complete!</div>'}</div>
+    <div class="sec-hdr">HITTERS</div>
+    ${HITTER_SLOTS.map((s,i) => renderSlot(s, assigned.hitters[i])).join('')}
+    <div class="sec-hdr">PITCHERS</div>
+    ${PITCHER_SLOTS.map((s,i) => renderSlot(s, assigned.pitchers[i])).join('')}
+    <div class="sec-hdr">BENCH</div>
+    ${BENCH_SLOTS.map((s,i) => renderSlot(s, assigned.bench[i])).join('')}
+  `;
+
+  document.getElementById('myTeamRight').innerHTML = `
+    <div class="roster-mgmt-card">
+      <div class="rm-title">ROSTER MANAGEMENT — OPTIMAL WEEKLY LINEUP</div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:10px;letter-spacing:1px">BASED ON YOUR CURRENT ${roster.length}-PLAYER ROSTER</div>
+
+      <div style="font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:4px">HITTERS</div>
+      <div class="rm-grid" style="margin-bottom:10px">
+        <div class="rm-item"><div class="rm-num" style="color:var(--cyan)">${hitters.length}</div><div class="rm-label">TOTAL</div></div>
+        <div class="rm-item"><div class="rm-num" style="color:var(--green)">${Math.min(hitters.length, 9)}</div><div class="rm-label">START</div></div>
+        <div class="rm-item"><div class="rm-num" style="color:var(--text2)">${Math.max(0, hitters.length - 9)}</div><div class="rm-label">BENCH/STREAM</div></div>
+      </div>
+      <div style="font-size:10px;color:var(--text2);line-height:1.7;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+        Start all <b style="color:var(--green)">9 core hitters</b> every week. 
+        ${hitters.length > 9 ? `Rotate bench hitters vs LHP when available — prioritize <b style="color:var(--yellow)">Laureano</b> and <b style="color:var(--yellow)">Walker</b> in favorable matchups.` : `Add <b style="color:var(--red)">${9 - hitters.length} more hitters</b> before worrying about bench depth.`}
+        Basallo stays active as C2 — don't bench your only backup catcher.
+      </div>
+
+      <div style="font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:4px">STARTING PITCHERS</div>
+      <div class="rm-grid" style="margin-bottom:10px">
+        <div class="rm-item"><div class="rm-num" style="color:var(--cyan)">${sp.length}</div><div class="rm-label">ROSTER</div></div>
+        <div class="rm-item"><div class="rm-num" style="color:var(--green)">${Math.min(sp.length, 5)}</div><div class="rm-label">START</div></div>
+        <div class="rm-item"><div class="rm-num" style="color:var(--text2)">${Math.max(0, sp.length - 5)}</div><div class="rm-label">SPOT/STREAM</div></div>
+      </div>
+      <div style="font-size:10px;color:var(--text2);line-height:1.7;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--border)">
+        <b style="color:var(--green)">Always start:</b> Skenes, Webb, Luzardo — elite ERA/WHIP anchors, start regardless of matchup.<br>
+        <b style="color:var(--yellow)">Matchup-start:</b> Imai — check opponent handedness and park factor each week.<br>
+        <b style="color:var(--text3)">Target: 4-5 SP starts/week.</b> Avoid exceeding 5 to protect ERA/WHIP ratios. Sit SP in bad parks (Coors, Great American).
+      </div>
+
+      <div style="font-family:'Rajdhani';font-size:10px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:4px">RELIEVERS</div>
+      <div class="rm-grid" style="margin-bottom:10px">
+        <div class="rm-item"><div class="rm-num" style="color:var(--cyan)">${rp.length}</div><div class="rm-label">ROSTER</div></div>
+        <div class="rm-item"><div class="rm-num" style="color:var(--green)">${Math.min(rp.length, 3)}</div><div class="rm-label">ACTIVE</div></div>
+        <div class="rm-item"><div class="rm-num" style="color:${svCount < 2 ? 'var(--red)' : 'var(--green)'}">${svCount}</div><div class="rm-label">CLOSERS</div></div>
+      </div>
+      <div style="font-size:10px;color:var(--text2);line-height:1.7">
+        ${(() => {
+          const CLOSER_ROLES = {
+            // Named closers
+            'Williams':    {role:'CLOSER',    team:'NYM', note:'~28–32 SV ceiling, locked role'},
+            'Helsley':     {role:'CLOSER',    team:'STL', note:'Elite strikeout closer'},
+            'Munoz':       {role:'CLOSER',    team:'SEA', note:'Nasty slider, near-locked role'},
+            'Diaz':        {role:'CLOSER',    team:'NYM', note:'Elite; injury history'},
+            'Bednar':      {role:'CLOSER',    team:'PIT', note:'Solid mid-market closer'},
+            'Fairbanks':   {role:'CLOSER',    team:'TB',  note:'Lockdown when healthy'},
+            'Hoffman':     {role:'CLOSER',    team:'COL', note:'SV opps in hitter park'},
+            'Abreu':       {role:'CLOSER',    team:'HOU', note:'Took over Pressly role'},
+            'Duran':       {role:'CLOSER',    team:'MIN', note:'Elite reliever, locked 9th'},
+            'Pagan':       {role:'CLOSER',    team:'SF',  note:'Role secure for now'},
+            'Jansen':      {role:'CLOSER',    team:'BOS', note:'Veteran, role could be challenged'},
+            'Hader':       {role:'CLOSER',    team:'HOU', note:'Elite; may split w/ Abreu'},
+            // Co-closers / committee situations
+            'Dominguez':   {role:'CO-CLOSER', team:'CWS', note:'Competing for saves; monitor situation'},
+            'Weathers':    {role:'CO-CLOSER', team:'CIN', note:'Part of Reds save committee'},
+            'Sale':        {role:'SP',        team:'ATL', note:'SP — not a closer'},
+            'Crochet':     {role:'SP',        team:'BOS', note:'SP — not a closer'},
+          };
+
+          const rpRows = rp.map(p => {
+            const key = Object.keys(CLOSER_ROLES).find(k => p.name.includes(k));
+            const info = key ? CLOSER_ROLES[key] : null;
+            const roleBadge = info
+              ? info.role === 'CLOSER'
+                ? `<span style="font-family:'Rajdhani';font-size:9px;font-weight:800;letter-spacing:1px;background:rgba(0,230,118,.15);border:1px solid rgba(0,230,118,.4);color:var(--green);border-radius:3px;padding:1px 5px;margin-left:4px">🔒 CLOSER</span>`
+                : `<span style="font-family:'Rajdhani';font-size:9px;font-weight:800;letter-spacing:1px;background:rgba(255,215,64,.12);border:1px solid rgba(255,215,64,.4);color:var(--yellow);border-radius:3px;padding:1px 5px;margin-left:4px">⚡ CO-CLOSER</span>`
+              : `<span style="font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:1px;background:var(--bg4);border:1px solid var(--border);color:var(--text3);border-radius:3px;padding:1px 5px;margin-left:4px">HOLD/SETUP</span>`;
+            const subNote = info?.note ? `<span style="color:var(--text3);font-size:9px;margin-left:4px">— ${info.note}</span>` : '';
+            return `<div style="display:flex;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
+              <span style="color:var(--text);font-weight:500;min-width:100px">${p.name}</span>
+              ${roleBadge}${subNote}
+            </div>`;
+          }).join('') || '<div style="color:var(--text3);font-style:italic">No relievers rostered yet</div>';
+
+          return `<div style="margin-bottom:8px">${rpRows}</div>
+        <b style="color:var(--red)">Priority add:</b> A second proven closer is your #1 waiver priority once draft ends.`;
+        })()}
+      </div>
+    </div>
+    <div class="roster-mgmt-card">
+      <div class="rm-title">STAT CATEGORY STATUS</div>
+      ${renderStatStatus(roster)}
+    </div>
+    <div class="roster-mgmt-card">
+      <div class="rm-title">BUDGET TRACKER</div>
+      <div style="font-family:'IBM Plex Mono';font-size:24px;font-weight:700;color:var(--green)">$${ge.remaining}</div>
+      <div style="font-size:10px;color:var(--text2);margin-top:4px">${31-roster.length} picks remaining · $${(ge.remaining/(31-roster.length)||0).toFixed(1)}/pick avg</div>
+      <div class="budget-bar" style="margin-top:8px"><div class="budget-fill" style="width:${Math.round(ge.remaining/BUDGET*100)}%"></div></div>
+      <div style="font-size:9px;color:var(--text3);margin-top:3px">${Math.round(ge.remaining/BUDGET*100)}% of budget remaining</div>
+    </div>
+    <div class="roster-mgmt-card">
+      <div class="rm-title">YAHOO SPORTS API</div>
+      <div style="font-size:10px;color:var(--text2);line-height:1.6">Yahoo requires OAuth login for live sync. To connect: go to <b style="color:var(--cyan)">developer.yahoo.com</b>, create a fantasy app, get your OAuth credentials, and paste them below. This enables auto-updating rosters as transactions happen in your league.</div>
+      <input class="modal-inp" placeholder="Yahoo OAuth Token (paste here to connect)" style="margin-top:8px;font-size:10px;" id="yahooToken">
+      <button onclick="connectYahoo()" style="margin-top:6px;width:100%;background:var(--purple);border:none;border-radius:4px;color:white;font-family:'Rajdhani';font-weight:800;font-size:11px;letter-spacing:2px;padding:6px;cursor:pointer;">CONNECT YAHOO</button>
+    </div>
+  `;
+}
+
+function renderStatStatus(roster) {
+  const hitters = roster.filter(p => !p.pos.includes('SP') && !p.pos.includes('RP'));
+  const pitchers = roster.filter(p => p.pos.includes('SP') || p.pos.includes('RP'));
+  const cats = [
+    {cat:'AVG/OBP', strength: hitters.some(p=>['J. Soto','A. Riley','Z. Neto'].some(n=>p.name.includes(n.split(' ')[1]))) ? 'STRONG' : 'OK', cls:'sh-good'},
+    {cat:'HOME RUNS', strength: hitters.length >= 3 ? 'OK' : 'WEAK', cls:'sh-warn'},
+    {cat:'RBI', strength: 'OK', cls:'sh-warn'},
+    {cat:'STOLEN BASES', strength: roster.some(p=>p.name.includes('Arozarena')||p.name.includes('Neto')) ? 'OK' : 'WEAK', cls:'sh-warn'},
+    {cat:'ERA/WHIP', strength: pitchers.length >= 3 ? 'OK' : 'WEAK', cls:'sh-warn'},
+    {cat:'STRIKEOUTS', strength: roster.some(p=>p.name.includes('Skenes')||p.name.includes('Webb')) ? 'STRONG' : 'OK', cls:'sh-good'},
+    {cat:'SAVES', strength: roster.some(p=>p.name.includes('Williams')||p.name.includes('Dominguez')) ? 'OK' : 'WEAK', cls:'sh-warn'},
+    {cat:'WINS', strength: pitchers.filter(p=>p.pos.includes('SP')).length >= 3 ? 'OK' : 'WEAK', cls:'sh-warn'},
+  ];
+  return cats.map(c => `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border);font-size:10px">
+    <span style="color:var(--text2)">${c.cat}</span>
+    <span class="${c.cls}" style="font-family:'Rajdhani';font-size:10px;font-weight:700">${c.strength}</span>
+  </div>`).join('');
+}
+
+// ═══════════════════════════════════════
+// INTEL
+// ═══════════════════════════════════════
+function renderIntelSidebar() {
+  const mgrsOrdered = DRAFT_ORDER.filter(id=>id!=='GE').map(id => {
+    const m = S.managers[id];
+    const prof = MGR_PROFILES[id];
+    const thr = prof?.threatLevel||'';
+    const thrCls = thr.startsWith('HIGH') ? 'threat-high' : thr.startsWith('MED') ? 'threat-med' : 'threat-low';
+    const thrColor = thr.startsWith('HIGH') ? 'var(--red)' : thr.startsWith('MED') ? 'var(--yellow)' : 'var(--green)';
+    return `<div class="mgr-card ${thrCls}" onclick="showMgrProfile('${id}')">
+      <span class="mgr-card-rem" style="color:${thrColor}">$${m.remaining}</span>
+      <div class="mgr-card-name" style="color:${thrColor}">${MGR_META[id].name}</div>
+      <div class="mgr-card-nick">${prof?.nickname||''}</div>
+    </div>`;
+  });
+  document.getElementById('intelSidebar').innerHTML = `
+    <div style="font-family:'Rajdhani';font-size:9px;font-weight:700;letter-spacing:2px;color:var(--text3);margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border)">MANAGER INTEL<br><span style="color:var(--red)">RED</span>=HIGH · <span style="color:var(--yellow)">YEL</span>=MED · <span style="color:var(--green)">GRN</span>=LOW</div>
+    ${mgrsOrdered.join('')}
+  `;
+}
+
+function renderAutoIntel() {
+  const ge = S.managers['GE'];
+  const picksLeft = 31 - ge.players.length;
+  const pp = picksLeft > 0 ? (ge.remaining/picksLeft).toFixed(1) : '0';
+
+  // Needs
+  const posNeeds = getPosNeeds(ge.players);
+  const needsHtml = posNeeds.map(n=>`<b style="color:var(--red)">${n}</b>`).join(' ');
+
+  // Next GE picks
+  const allPicks = buildDraftOrder();
+  const nextGE = allPicks.filter(p=>p.mgr==='GE'&&p.pick>=S.currentPick).slice(0,4);
+  const picksStr = nextGE.map(p=>`<b>#${p.pick}</b>`).join(' ');
+
+  // Top available
+  const topAvail = S.pool.filter(p=>!p.taken).slice(0,6).map(p=>`${p.name.split(' ').pop()} $${p.cur}`).join(', ');
+
+  document.getElementById('autoCards').innerHTML = `
+    <div class="a-card">
+      <div class="a-card-title" style="color:var(--red)">YOUR NEEDS</div>
+      <div class="a-card-body">${needsHtml || '<span style="color:var(--green)">Looking good</span>'}</div>
+    </div>
+    <div class="a-card">
+      <div class="a-card-title" style="color:var(--cyan)">YOUR PICKS</div>
+      <div class="a-card-body">${picksStr} <span style="color:var(--text3)">· $${pp}/pick</span></div>
+    </div>
+    <div class="a-card">
+      <div class="a-card-title" style="color:var(--yellow)">TOP AVAILABLE</div>
+      <div class="a-card-body">${topAvail}</div>
+    </div>
+  `;
+}
+
+function renderPickOrderBar() {
+  const allPicks = buildDraftOrder();
+  const upcomingPicks = allPicks.filter(p => p.pick >= S.currentPick && p.pick <= S.currentPick + 12).slice(0,12);
+  const html = upcomingPicks.map(p => {
+    const isGreg = p.mgr === 'GE';
+    const before = p.pick < (upcomingPicks.find(x=>x.mgr==='GE')?.pick||999) && !isGreg;
+    const cls = isGreg ? 'pick-chip is-greg' : before ? 'pick-chip before-greg' : 'pick-chip after-greg';
+    return `<div class="${cls}">#${p.pick} ${MGR_META[p.mgr].name}</div>`;
+  }).join('');
+  document.getElementById('pickOrderBar').innerHTML = `
+    <div class="pick-order-title">UPCOMING PICKS — <span style="color:var(--red)">RED</span>=before you · <span style="color:var(--green)">GREEN</span>=your pick</div>
+    <div class="pick-chips">${html}</div>
+  `;
+}
+
+function getPosNeeds(players) {
+  const slots = {C:2,'1B':1,'2B':1,'3B':1,SS:1,OF:5,SP:5,RP:2};
+  const filled = {};
+  for (const p of players) {
+    for (const slot of Object.keys(slots)) {
+      if (p.pos.includes(slot) && (filled[slot]||0) < slots[slot]) { filled[slot]=(filled[slot]||0)+1; break; }
+    }
+  }
+  return Object.entries(slots).filter(([s,n])=>(filled[s]||0)<n).map(([s,n])=>`${s}(${n-(filled[s]||0)})`);
+}
+
+// ═══════════════════════════════════════
+// AI INTEL ENGINE
+// ═══════════════════════════════════════
+function buildSystemPrompt() {
+  const ge = S.managers['GE'];
+  const avail = S.pool.filter(p=>!p.taken).slice(0,40).map(p=>`${p.name} ${p.pos} $${p.cur}`).join(', ');
+  const roster = ge.players.map(p=>`${p.name}(${p.pos},$${p.price}${p.keeper?',K':''})`).join(', ')||'empty';
+  const needs = getPosNeeds(ge.players).join(', ')||'none';
+
+  const mgrStates = Object.entries(S.managers).map(([id,m]) => {
+    const prof = MGR_PROFILES[id];
+    const ros = m.players.map(p=>`${p.name}(${p.pos},$${p.price})`).join(',')||'empty';
+    return `${MGR_META[id].name}(${id}): $${m.remaining} left | ${m.players.length} picks | ${prof?.nickname} | ${ros}`;
+  }).join('\n');
+
+  const personalityBlock = Object.entries(MGR_PROFILES).filter(([id])=>id!=='GE').map(([id,p])=>{
+    return `${MGR_META[id].name}(${id}) — "${p.nickname}": ${(p.traits||[]).join('; ')} | anchors: ${p.historicAnchors} | blind: ${p.blindspot} | email: ${p.emailVoice}`;
+  }).join('\n');
+
+  // Who picks before Greg this round
+  const beforeGreg = whoPicksBeforeGreg().map(p=>`${MGR_META[p.mgr].name}(#${p.pick})`).join(', ');
+
+  return `You are BOAZ INTEL — brutally sharp fantasy baseball analyst for the BOAZ 2026 draft. You work exclusively for Greg Eisenman (GE), the Sweetwater Knights.
+
+DRAFT FORMAT: 12-team SNAKE draft. Fixed draft order: Frank(1), Jonah(2), Michael(3), Marcus(4), Greg(5), Jordan(6), Adam(7), Jeff(8), Charles(9), Pete(10), Sam(11), Ben(12). Snake reverses each round. THEFT = someone earlier in order takes your target before your pick. NO BIDDING — prices are pre-set salary cap values.
+
+CURRENT STATE:
+Pick: #${S.currentPick}
+Greg roster: ${roster}
+Greg budget: $${ge.remaining} | Needs: ${needs}
+Picks before Greg this round: ${beforeGreg||'none — Greg picks next'}
+Top available: ${avail}
+
+ALL MANAGERS:
+${mgrStates}
+
+10-YEAR PERSONALITIES (empirical):
+${personalityBlock}
+
+TRIGGERS: #13($32+↓$1), #25($23+↓$1), #37($21+↓$1), #60($19+↓$1), #77($15+↓$1), #107($11+↓$1), #123($7+↓$1), #139($6+↓$1), #162($5+↓$1), #192($4+↓$1), #242($3+↓$1)
+
+RULES:
+- THEFT RISK = who picks BEFORE Greg in the next round + do they need that position
+- Not about budget/bidding — it's about pick order and positional need
+- Be direct, specific, data-backed. Reference real historical picks.
+- Write manager commentary in their voice when relevant (Pete = Oscar speech, Ben = unbothered, Jordan = defensive)
+- Roast Jordan with receipts: tried to draft Dennis Santana (already taken), paid $64 for Trout, $76 left
+- Max 200 words unless asked for breakdown`;
+}
+
+async function runIntel() {
+  const q = document.getElementById('intelInp').value.trim();
+  if (!q) return;
+  const btn = document.getElementById('intelBtn');
+  const content = document.getElementById('intelContent');
+  btn.disabled = true;
+  content.innerHTML = `<div class="intel-thinking">Analyzing<div class="dots"><span>.</span><span>.</span><span>.</span></div></div>`;
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:500,system:buildSystemPrompt(),messages:[{role:'user',content:q}]})
+    });
+    const data = await res.json();
+    const text = data.content?.[0]?.text||'No response';
+    content.innerHTML = `<div style="font-size:12px;line-height:1.7;white-space:pre-wrap;color:var(--text)">${text}</div>`;
+  } catch(e) {
+    content.innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false;
+}
+
+function showMgrProfile(mgrId) {
+  switchTab('intel');
+  const prof = MGR_PROFILES[mgrId];
+  const meta = MGR_META[mgrId];
+  const mgr = S.managers[mgrId];
+  if (!prof) return;
+
+  const jabs = prof.jabLines||[];
+  const jab = jabs.length ? `<div style="background:rgba(255,68,68,.07);border:1px solid rgba(255,68,68,.3);border-radius:5px;padding:7px 10px;margin-bottom:8px;font-size:10px;color:var(--red);font-style:italic">💀 "${jabs[Math.floor(Math.random()*jabs.length)]}"</div>` : '';
+  const thrColor = (prof.threatLevel||'').startsWith('HIGH')?'var(--red)':(prof.threatLevel||'').startsWith('MED')?'var(--yellow)':'var(--green)';
+
+  document.getElementById('intelContent').innerHTML = `
+    <div class="mgr-profile-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div style="font-family:'Rajdhani';font-size:20px;font-weight:900;color:var(--cyan)">${meta.full}</div>
+        <div style="background:var(--bg4);border:1px solid var(--border2);border-radius:3px;padding:2px 8px;font-size:9px;font-weight:700;color:var(--yellow)">${prof.nickname}</div>
+        <div style="margin-left:auto;font-family:'IBM Plex Mono';font-size:14px;font-weight:700;color:var(--green)">$${mgr.remaining}</div>
+      </div>
+      ${jab}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        <div class="a-card"><div class="a-card-title" style="color:var(--red)">10-YR SPEND</div><div class="a-card-body">${prof.spendSplit}</div></div>
+        <div class="a-card"><div class="a-card-title" style="color:var(--cyan)">EMAIL VOICE</div><div class="a-card-body" style="font-style:italic">${prof.emailVoice}</div></div>
+      </div>
+      <div class="a-card" style="margin-bottom:8px"><div class="a-card-title" style="color:var(--yellow)">HISTORIC ANCHORS</div><div class="a-card-body">${prof.historicAnchors}</div></div>
+      <div class="a-card" style="margin-bottom:8px"><div class="a-card-title" style="color:var(--green)">DRAFT DNA</div><ul style="padding-left:14px;font-size:10px;color:var(--text2);line-height:1.8">${(prof.traits||[]).map(t=>`<li>${t}</li>`).join('')}</ul></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        <div class="a-card" style="border-color:rgba(255,68,68,.2)"><div class="a-card-title" style="color:var(--red)">BLIND SPOT</div><div class="a-card-body">${prof.blindspot}</div></div>
+        <div class="a-card" style="border-color:rgba(${thrColor},.3)"><div class="a-card-title" style="color:${thrColor}">2026 THREAT</div><div class="a-card-body">${prof.threatLevel}</div></div>
+      </div>
+      <button onclick="askAboutManager('${mgrId}')" style="width:100%;background:var(--cyan);border:none;border-radius:5px;padding:7px;font-family:'Rajdhani';font-weight:800;font-size:12px;letter-spacing:2px;color:var(--bg);cursor:pointer">🤖 WHAT IS ${meta.name.toUpperCase()} DOING NEXT?</button>
+    </div>
+  `;
+}
+
+function askAboutManager(id) {
+  const meta = MGR_META[id];
+  const mgr = S.managers[id];
+  document.getElementById('intelInp').value = `Based on pick order and ${meta.name}'s 10-year history, what positions/players is ${meta.name} (${id}) most likely targeting in the next 2 rounds? Who specifically could they take before I get a chance? Write it in their voice.`;
+  runIntel();
+}
+
+// ═══════════════════════════════════════
+// RESEARCH TAB
+// ═══════════════════════════════════════
+function switchResearch(tab) {
+  document.querySelectorAll('.r-tab').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.r-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelector(`.r-tab[onclick*="${tab}"]`).classList.add('active');
+  document.getElementById(`r-${tab}`).classList.add('active');
+}
+
+async function runValueResearch() {
+  const btn = document.getElementById('valueBtn');
+  btn.disabled = true;
+  btn.textContent = 'ANALYZING...';
+  const avail = S.pool.filter(p=>!p.taken).slice(0,60).map(p=>`${p.name}|${p.pos}|${p.team}|$${p.cur}`).join('\n');
+  const ge = S.managers['GE'];
+  const needs = getPosNeeds(ge.players).join(', ');
+  const prompt = `You are a fantasy baseball value analyst. Given these available players with their current draft prices, assess each player's value using Statcast metrics (exit velocity, barrel rate, xFIP, FIP, wRC+, SIERA), injury risk from 2024-2025 history, and projected 2026 production. Compare assessed value to draft price and assign a VALUE SCORE (0-100, where 100 = massive steal, 50 = fair price, 0 = massive overpay). Consider that Greg needs: ${needs}.
+
+Format your response as a JSON array ONLY, no other text. Each item: {"name":"Player Name","pos":"POS","price":N,"valueScore":N,"projValue":N,"keyMetric":"one key stat or insight","injuryRisk":"LOW/MED/HIGH","verdict":"2-word verdict"}
+
+Players to analyze (name|pos|team|price):
+${avail}`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,messages:[{role:'user',content:prompt}]})
+    });
+    const data = await res.json();
+    let text = data.content?.[0]?.text||'[]';
+    text = text.replace(/```json|```/g,'').trim();
+    const players = JSON.parse(text);
+    players.sort((a,b)=>b.valueScore-a.valueScore);
+
+    const rows = players.map((p,i) => {
+      const diff = p.projValue - p.price;
+      const diffStr = diff >= 0 ? `<span class="val-diff pos">+$${diff}</span>` : `<span class="val-diff neg">-$${Math.abs(diff)}</span>`;
+      const scoreCls = p.valueScore>=70?'val-good':p.valueScore>=45?'val-ok':'val-bad';
+      const injCls = p.injuryRisk==='HIGH'?'val-bad':p.injuryRisk==='MED'?'val-ok':'val-good';
+      return `<tr>
+        <td style="color:var(--text3)">${i+1}</td>
+        <td class="val-name" onclick="openSavant('${p.name.replace(/'/g,"\\'")}')">${p.name}</td>
+        <td><span class="pr-pos">${p.pos}</span></td>
+        <td style="font-family:'IBM Plex Mono'">$${p.price}</td>
+        <td>${diffStr}</td>
+        <td><span class="val-score ${scoreCls}">${p.valueScore}</span></td>
+        <td style="font-size:9px;color:var(--text3)">${p.keyMetric}</td>
+        <td><span class="${injCls}" style="font-size:9px">${p.injuryRisk}</span></td>
+        <td style="color:var(--cyan);font-size:10px">${p.verdict}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('valueResults').innerHTML = `
+      <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Value score: 100=massive steal · 50=fair · 0=overpay. Click player name to open Baseball Savant.</div>
+      <table class="value-table">
+        <thead><tr>
+          <th>#</th><th>PLAYER</th><th>POS</th><th>PRICE</th><th>VS PROJ</th><th>VALUE</th><th>KEY METRIC</th><th>INJ RISK</th><th>VERDICT</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById('valueResults').innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false;
+  btn.textContent = '🔬 RE-RUN VALUE ANALYSIS';
+}
+
+async function runProspectResearch() {
+  const btn = document.getElementById('prospectBtn');
+  btn.disabled = true;
+  btn.textContent = 'RESEARCHING...';
+  const prompt = `You are a baseball prospect analyst. Create a composite top 50 MLB prospect ranking for keeper fantasy baseball purposes by synthesizing rankings from Baseball America, FanGraphs, MLB Pipeline, ESPN, CBS Sports, and Baseball Reference. For each prospect include their ETA, best fantasy category (HR power/SB speed/AVG/SP strikeouts/RP saves), injury risk, and keeper value rating (1-10). Format as JSON array ONLY: [{"rank":1,"name":"Name","team":"TEAM","pos":"POS","eta":"2026","fantasyValue":10,"bestCat":"HR+RBI","injRisk":"LOW","note":"brief insight"}]`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:4000,messages:[{role:'user',content:prompt}]})
+    });
+    const data = await res.json();
+    let text = data.content?.[0]?.text||'[]';
+    text = text.replace(/```json|```/g,'').trim();
+    const prospects = JSON.parse(text);
+
+    const rows = prospects.map(p => {
+      const valCls = p.fantasyValue>=8?'val-good':p.fantasyValue>=6?'val-ok':'val-bad';
+      const injCls = p.injRisk==='HIGH'?'val-bad':p.injRisk==='MED'?'val-ok':'val-good';
+      const avail = S.pool.find(pl=>pl.name.toLowerCase().includes(p.name.toLowerCase().split(' ')[1]));
+      const poolInfo = avail ? `<span style="color:var(--green)">$${avail.cur}</span>` : '<span style="color:var(--text3)">—</span>';
+      return `<tr>
+        <td style="color:var(--text3);font-weight:700">${p.rank}</td>
+        <td class="val-name" onclick="openSavant('${p.name.replace(/'/g,"\\'")}')">${p.name}</td>
+        <td><span class="pr-pos">${p.pos}</span></td>
+        <td style="color:var(--text3)">${p.team}</td>
+        <td style="color:var(--cyan);font-size:10px">${p.eta}</td>
+        <td><span class="val-score ${valCls}">${p.fantasyValue}</span></td>
+        <td style="font-size:9px;color:var(--yellow)">${p.bestCat}</td>
+        <td><span class="${injCls}" style="font-size:9px">${p.injRisk}</span></td>
+        <td>${poolInfo}</td>
+        <td style="font-size:9px;color:var(--text3)">${p.note}</td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('prospectResults').innerHTML = `
+      <div style="font-size:10px;color:var(--text3);margin-bottom:8px">Composite rankings from Baseball America, FanGraphs, MLB Pipeline, ESPN, CBS. Click player to open Savant. Pool price shown if available in your draft.</div>
+      <table class="value-table">
+        <thead><tr><th>#</th><th>PROSPECT</th><th>POS</th><th>TEAM</th><th>ETA</th><th>F.VALUE</th><th>BEST CAT</th><th>INJ RISK</th><th>POOL $</th><th>NOTE</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById('prospectResults').innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false;
+  btn.textContent = '🌟 RE-RUN PROSPECT RANKINGS';
+}
+
+async function runRosterMgmt() {
+  const btn = document.getElementById('rosterMgmtBtn');
+  btn.disabled = true;
+  btn.textContent = 'ANALYZING...';
+  const ge = S.managers['GE'];
+  const roster = ge.players.map(p=>`${p.name} (${p.pos}, $${p.price})`).join(', ');
+  const needs = getPosNeeds(ge.players).join(', ');
+  const prompt = `You are a fantasy baseball roster construction expert. Analyze this roster for the Sweetwater Knights (Greg Eisenman) in a 12-team keeper league with categories: AVG, R, HR, RBI, SB, ERA, WHIP, K, W, SV.
+
+Current roster: ${roster}
+Budget remaining: $${ge.remaining}
+Positional needs: ${needs}
+
+Provide:
+1. Optimal weekly starting lineup recommendation
+2. Category strengths and weaknesses
+3. Specific players to prioritize in remaining ${31-ge.players.length} picks
+4. Roster balance score (1-10) and why
+5. One "bold move" recommendation
+
+Be specific, direct, and data-driven. Reference actual player stats.`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:600,messages:[{role:'user',content:prompt}]})
+    });
+    const data = await res.json();
+    const text = data.content?.[0]?.text||'';
+    document.getElementById('rosterMgmtResults').innerHTML = `
+      <div style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:12px;font-size:12px;line-height:1.7;color:var(--text);white-space:pre-wrap">${text}</div>`;
+  } catch(e) {
+    document.getElementById('rosterMgmtResults').innerHTML = `<div style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+  btn.disabled = false;
+  btn.textContent = '📋 RE-ANALYZE ROSTER';
+}
+
+// ═══════════════════════════════════════
+// DRAFT MODAL
+// ═══════════════════════════════════════
+let draftingPlayerId = null;
+
+function openDraftModal(playerId) {
+  const p = S.pool[playerId];
+  draftingPlayerId = playerId;
+  document.getElementById('modalPlayerInfo').innerHTML = `<b style="color:var(--text)">${p.name}</b> · ${p.pos} · ${p.team} · <span style="color:var(--green)">$${p.cur}</span>`;
+  document.getElementById('modalPrice').value = p.cur;
+  document.getElementById('modalRound').value = Math.ceil(S.currentPick / 12);
+
+  // Manager dropdown
+  const sel = document.getElementById('modalMgr');
+  sel.innerHTML = DRAFT_ORDER.map(id => `<option value="${id}" ${id==='GE'?'selected':''}>${MGR_META[id].name} ($${S.managers[id].remaining} left)</option>`).join('');
+
+  document.getElementById('draftModal').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('draftModal').classList.remove('open');
+  draftingPlayerId = null;
+}
+
+function confirmDraft() {
+  const p = S.pool[draftingPlayerId];
+  const mgrId = document.getElementById('modalMgr').value;
+  const price = parseInt(document.getElementById('modalPrice').value) || p.cur;
+  const round = parseInt(document.getElementById('modalRound').value) || Math.ceil(S.currentPick/12);
+
+  const mgr = S.managers[mgrId];
+  mgr.players.push({name:p.name, pos:p.pos, price, keeper:false, round});
+  mgr.spent += price;
+  mgr.remaining = Math.max(0, mgr.remaining - price);
+
+  p.taken = true;
+  S.currentPick++;
+
+  // Log pick
+  S.pickLog.unshift({pick:S.currentPick-1, mgr:mgrId, name:p.name, pos:p.pos, price, round});
+
+  closeModal();
+  saveState();
+  render();
+}
+
+// ═══════════════════════════════════════
+// TICKER
+// ═══════════════════════════════════════
+function renderTickerMgrSelect() {
+  const sel = document.getElementById('tickerMgr');
+  if (!sel) return;
+  sel.innerHTML = DRAFT_ORDER.map(id => `<option value="${id}">${MGR_META[id].name}</option>`).join('');
+}
+
+function logPick() {
+  const playerName = document.getElementById('tickerPlayer').value.trim();
+  const mgrId = document.getElementById('tickerMgr').value;
+  const price = parseInt(document.getElementById('tickerPrice').value) || 1;
+  if (!playerName) return;
+
+  // Find in pool
+  const poolP = S.pool.find(p => p.name.toLowerCase().includes(playerName.toLowerCase()));
+  if (poolP) {
+    poolP.taken = true;
+    openDraftModal(poolP.id);
+    document.getElementById('modalMgr').value = mgrId;
+    document.getElementById('modalPrice').value = price;
+  } else {
+    // Add manually
+    const mgr = S.managers[mgrId];
+    mgr.players.push({name:playerName, pos:'?', price, keeper:false, round:Math.ceil(S.currentPick/12)});
+    mgr.spent += price;
+    mgr.remaining = Math.max(0, mgr.remaining - price);
+    S.currentPick++;
+    S.pickLog.unshift({pick:S.currentPick-1, mgr:mgrId, name:playerName, pos:'?', price});
+  }
+
+  document.getElementById('tickerPlayer').value = '';
+  document.getElementById('tickerPrice').value = '';
+  saveState();
+  render();
+}
+
+function renderTickerLog() {
+  const el = document.getElementById('tickerLog');
+  if (!el) return;
+  if (!S.pickLog.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:11px;padding:10px">No picks logged yet. Enter picks above as they come in via email.</div>';
+    return;
+  }
+  el.innerHTML = S.pickLog.slice(0,50).map(pick => {
+    const meta = MGR_META[pick.mgr];
+    const isGreg = pick.mgr === 'GE';
+    return `<div style="display:flex;gap:10px;align-items:center;padding:5px 8px;background:var(--bg3);border:1px solid ${isGreg?'var(--yellow)':' var(--border)'};border-radius:4px;font-size:11px">
+      <span style="color:var(--text3);font-family:'IBM Plex Mono';font-size:9px">#${pick.pick}</span>
+      <span style="color:${isGreg?'var(--yellow)':'var(--text2)'};font-weight:600">${meta?.name}</span>
+      <span style="color:var(--text)">${pick.name}</span>
+      <span style="color:var(--text3)">${pick.pos}</span>
+      <span style="color:var(--green);font-family:'IBM Plex Mono';margin-left:auto">$${pick.price}</span>
+    </div>`;
+  }).join('');
+}
+
+// ═══════════════════════════════════════
+// TABS
+// ═══════════════════════════════════════
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelector(`.tab-btn[onclick*="${tab}"]`).classList.add('active');
+  document.getElementById(`tab-${tab}`).classList.add('active');
+  if (tab==='myteam') renderMyTeam();
+  if (tab==='intel') { renderAutoIntel(); renderIntelSidebar(); renderPickOrderBar(); }
+}
+
+// ═══════════════════════════════════════
+// EXPORT
+// ═══════════════════════════════════════
+function exportXLSX() {
+  const wb = XLSX.utils.book_new();
+  for (const [id, mgr] of Object.entries(S.managers)) {
+    const meta = MGR_META[id];
+    const rows = [['Player','Price','POS','Keeper','Round']];
+    mgr.players.forEach(p => rows.push([p.name,p.price,p.pos,p.keeper?'Y':'',p.round||'']));
+    rows.push([]);
+    rows.push(['Spent',mgr.spent,'','Remaining',mgr.remaining]);
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{wch:22},{wch:7},{wch:10},{wch:8},{wch:7}];
+    XLSX.utils.book_append_sheet(wb, ws, id);
+  }
+  XLSX.writeFile(wb, `Boaz2026_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+function importFromSpreadsheet() { document.getElementById('importFile').click(); }
+
+async function handleImport(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf);
+  alert(`Import detected: ${wb.SheetNames.join(', ')}\nFull import coming soon — use the ticker to log picks manually for now.`);
+}
+
+function resetDraft() {
+  if (!confirm('Reset to spreadsheet state? This will clear any manually logged picks.')) return;
+  localStorage.removeItem('boaz26_v3');
+  initState();
+  render();
+}
+
+function connectYahoo() {
+  alert('Yahoo Sports API connection requires backend OAuth. Feature coming soon — for now, use the Live Ticker to log picks manually as they come in via email.');
+}
+
+// ═══════════════════════════════════════
+// INIT PLAYER DATA
+// ═══════════════════════════════════════
+const INIT_PLAYERS = [{"rank": 2, "taken": true, "name": "Kyle Tucker", "team": "LAD", "pos": "OF", "price": 47}, {"rank": 3, "taken": true, "name": "Fernando Tatis Jr.", "team": "SD", "pos": "OF", "price": 42}, {"rank": 4, "taken": true, "name": "Julio Rodriguez", "team": "SEA", "pos": "OF", "price": 42}, {"rank": 5, "taken": true, "name": "Gunnar Henderson", "team": "BAL", "pos": "SS", "price": 41}, {"rank": 6, "taken": true, "name": "Vladimir Guerrero Jr.", "team": "TOR", "pos": "1B/DH", "price": 41}, {"rank": 7, "taken": true, "name": "Corbin Carroll", "team": "ARI", "pos": "OF", "price": 39}, {"rank": 8, "taken": false, "name": "Ketel Marte", "team": "ARI", "pos": "2B/DH", "price": 37}, {"rank": 9, "taken": true, "name": "Francisco Lindor", "team": "NYM", "pos": "SS", "price": 36}, {"rank": 10, "taken": false, "name": "Logan Gilbert", "team": "SEA", "pos": "SP", "price": 34}, {"rank": 11, "taken": true, "name": "Yordan Alvarez", "team": "HOU", "pos": "OF/DH", "price": 33}, {"rank": 12, "taken": true, "name": "Manny Machado", "team": "SD", "pos": "3B", "price": 32}, {"rank": 13, "taken": false, "name": "Max Fried", "team": "NYY", "pos": "SP", "price": 31}, {"rank": 14, "taken": false, "name": "Hunter Greene", "team": "CIN", "pos": "SP", "price": 29}, {"rank": 15, "taken": true, "name": "Trea Turner", "team": "PHI", "pos": "SS", "price": 28}, {"rank": 16, "taken": true, "name": "Cody Bellinger", "team": "NYY", "pos": "OF", "price": 27}, {"rank": 17, "taken": true, "name": "Edwin Diaz", "team": "LAD", "pos": "RP", "price": 27}, {"rank": 18, "taken": true, "name": "Logan Webb", "team": "SF", "pos": "SP", "price": 27}, {"rank": 19, "taken": true, "name": "Austin Riley", "team": "ATL", "pos": "3B", "price": 26}, {"rank": 20, "taken": true, "name": "Mookie Betts", "team": "LAD", "pos": "SS", "price": 24}, {"rank": 21, "taken": false, "name": "Jackson Merrill", "team": "SD", "pos": "OF", "price": 23}, {"rank": 22, "taken": true, "name": "George Kirby", "team": "SEA", "pos": "SP", "price": 23}, {"rank": 23, "taken": false, "name": "William Contreras", "team": "MIL", "pos": "C/DH", "price": 23}, {"rank": 24, "taken": true, "name": "Freddie Freeman", "team": "LAD", "pos": "1B", "price": 23}, {"rank": 25, "taken": true, "name": "Framber Valdez", "team": "DET", "pos": "SP", "price": 22}, {"rank": 26, "taken": true, "name": "Cade Smith", "team": "CLE", "pos": "RP", "price": 22}, {"rank": 27, "taken": true, "name": "Joe Ryan", "team": "MIN", "pos": "SP", "price": 22}, {"rank": 28, "taken": true, "name": "Jhoan Duran", "team": "PHI", "pos": "RP", "price": 22}, {"rank": 29, "taken": true, "name": "Rafael Devers", "team": "SF", "pos": "1B/DH", "price": 22}, {"rank": 30, "taken": true, "name": "Dylan Cease", "team": "TOR", "pos": "SP", "price": 22}, {"rank": 31, "taken": false, "name": "Jose Altuve", "team": "HOU", "pos": "2B/OF/DH", "price": 22}, {"rank": 32, "taken": true, "name": "Josh Naylor", "team": "SEA", "pos": "1B/DH", "price": 21}, {"rank": 33, "taken": true, "name": "Seiya Suzuki", "team": "CHC", "pos": "OF/DH", "price": 21}, {"rank": 34, "taken": false, "name": "Blake Snell", "team": "LAD", "pos": "SP", "price": 21}, {"rank": 35, "taken": false, "name": "Christian Yelich", "team": "MIL", "pos": "DH", "price": 21}, {"rank": 36, "taken": true, "name": "Devin Williams", "team": "NYM", "pos": "RP", "price": 21}, {"rank": 37, "taken": true, "name": "Freddy Peralta", "team": "NYM", "pos": "SP", "price": 20}, {"rank": 38, "taken": true, "name": "CJ Abrams", "team": "WSH", "pos": "SS", "price": 20}, {"rank": 39, "taken": true, "name": "Corey Seager", "team": "TEX", "pos": "SS", "price": 20}, {"rank": 40, "taken": true, "name": "Vinnie Pasquantino", "team": "KC", "pos": "1B/DH", "price": 20}, {"rank": 41, "taken": true, "name": "David Bednar", "team": "NYY", "pos": "RP", "price": 20}, {"rank": 42, "taken": false, "name": "Riley Greene", "team": "DET", "pos": "OF/DH", "price": 20}, {"rank": 43, "taken": false, "name": "Bo Bichette", "team": "NYM", "pos": "SS", "price": 20}, {"rank": 44, "taken": false, "name": "Michael Harris II", "team": "ATL", "pos": "OF", "price": 20}, {"rank": 45, "taken": false, "name": "Alex Bregman", "team": "CHC", "pos": "3B", "price": 20}, {"rank": 46, "taken": false, "name": "Josh Hader", "team": "HOU", "pos": "RP", "price": 19}, {"rank": 47, "taken": false, "name": "Nick Pivetta", "team": "SD", "pos": "SP", "price": 19}, {"rank": 48, "taken": false, "name": "Eugenio Suarez", "team": "CIN", "pos": "3B", "price": 19}, {"rank": 49, "taken": false, "name": "Brandon Nimmo", "team": "TEX", "pos": "OF", "price": 19}, {"rank": 50, "taken": true, "name": "Zack Wheeler", "team": "PHI", "pos": "SP", "price": 19}, {"rank": 51, "taken": false, "name": "Kevin Gausman", "team": "TOR", "pos": "SP", "price": 19}, {"rank": 52, "taken": false, "name": "Sonny Gray", "team": "BOS", "pos": "SP", "price": 19}, {"rank": 53, "taken": false, "name": "Raisel Iglesias", "team": "ATL", "pos": "RP", "price": 19}, {"rank": 54, "taken": false, "name": "Brandon Woodruff", "team": "MIL", "pos": "SP", "price": 19}, {"rank": 55, "taken": false, "name": "Tyler Glasnow", "team": "LAD", "pos": "SP", "price": 19}, {"rank": 56, "taken": true, "name": "Jacob Misiorowski", "team": "MIL", "pos": "SP", "price": 19}, {"rank": 57, "taken": false, "name": "Salvador Perez", "team": "KC", "pos": "C/1B/DH", "price": 19}, {"rank": 58, "taken": false, "name": "Agustin Ramirez", "team": "MIA", "pos": "C/DH", "price": 19}, {"rank": 59, "taken": true, "name": "Randy Arozarena", "team": "SEA", "pos": "OF", "price": 19}, {"rank": 60, "taken": false, "name": "Jordan Westburg", "team": "BAL", "pos": "3B", "price": 18}, {"rank": 61, "taken": false, "name": "Oneil Cruz", "team": "PIT", "pos": "OF", "price": 18}, {"rank": 62, "taken": false, "name": "Chase Burns", "team": "CIN", "pos": "SP", "price": 18}, {"rank": 63, "taken": true, "name": "Jeff Hoffman", "team": "TOR", "pos": "RP", "price": 18}, {"rank": 64, "taken": false, "name": "Jo Adell", "team": "LAA", "pos": "OF", "price": 18}, {"rank": 65, "taken": false, "name": "Ryan Helsley", "team": "BAL", "pos": "RP", "price": 17}, {"rank": 66, "taken": false, "name": "Andy Pages", "team": "LAD", "pos": "OF", "price": 17}, {"rank": 67, "taken": false, "name": "Steven Kwan", "team": "CLE", "pos": "OF", "price": 17}, {"rank": 68, "taken": false, "name": "Ian Happ", "team": "CHC", "pos": "OF", "price": 16}, {"rank": 69, "taken": true, "name": "Nolan McLean", "team": "NYM", "pos": "SP", "price": 16}, {"rank": 70, "taken": false, "name": "Spencer Strider", "team": "ATL", "pos": "SP", "price": 16}, {"rank": 71, "taken": false, "name": "Trevor Megill", "team": "MIL", "pos": "RP", "price": 16}, {"rank": 72, "taken": true, "name": "Kyle Stowers", "team": "MIA", "pos": "OF", "price": 15}, {"rank": 73, "taken": false, "name": "Willy Adames", "team": "SF", "pos": "SS", "price": 15}, {"rank": 74, "taken": false, "name": "Will Smith", "team": "LAD", "pos": "C", "price": 15}, {"rank": 75, "taken": false, "name": "Teoscar Hernandez", "team": "LAD", "pos": "OF", "price": 15}, {"rank": 76, "taken": false, "name": "Jacob Wilson", "team": "ATH", "pos": "SS", "price": 15}, {"rank": 77, "taken": false, "name": "Ryan Pepiot", "team": "TB", "pos": "SP", "price": 14}, {"rank": 78, "taken": true, "name": "Daniel Palencia", "team": "CHC", "pos": "RP", "price": 14}, {"rank": 79, "taken": false, "name": "Ranger Suarez", "team": "BOS", "pos": "SP", "price": 14}, {"rank": 80, "taken": false, "name": "Isaac Paredes", "team": "HOU", "pos": "3B", "price": 14}, {"rank": 81, "taken": false, "name": "Tanner Bibee", "team": "CLE", "pos": "SP", "price": 14}, {"rank": 82, "taken": false, "name": "Jakob Marsee", "team": "MIA", "pos": "OF", "price": 13}, {"rank": 83, "taken": false, "name": "Noelvi Marte", "team": "CIN", "pos": "OF/3B", "price": 13}, {"rank": 84, "taken": false, "name": "Carlos Estevez", "team": "KC", "pos": "RP", "price": 13}, {"rank": 85, "taken": false, "name": "Nick Lodolo", "team": "CIN", "pos": "SP", "price": 13}, {"rank": 86, "taken": false, "name": "Drew Rasmussen", "team": "TB", "pos": "SP", "price": 13}, {"rank": 87, "taken": false, "name": "Luis Robert Jr.", "team": "NYM", "pos": "OF", "price": 12}, {"rank": 88, "taken": true, "name": "Bryan Reynolds", "team": "PIT", "pos": "OF/DH", "price": 12}, {"rank": 89, "taken": false, "name": "Taylor Ward", "team": "BAL", "pos": "OF", "price": 12}, {"rank": 90, "taken": false, "name": "Michael King", "team": "SD", "pos": "SP", "price": 12}, {"rank": 91, "taken": true, "name": "Pete Fairbanks", "team": "MIA", "pos": "RP", "price": 12}, {"rank": 92, "taken": false, "name": "Xavier Edwards", "team": "MIA", "pos": "2B/SS", "price": 12}, {"rank": 93, "taken": true, "name": "Kenley Jansen", "team": "DET", "pos": "RP", "price": 12}, {"rank": 94, "taken": false, "name": "MacKenzie Gore", "team": "TEX", "pos": "SP", "price": 12}, {"rank": 95, "taken": false, "name": "Ceddanne Rafaela", "team": "BOS", "pos": "OF/2B", "price": 12}, {"rank": 96, "taken": true, "name": "Matt Chapman", "team": "SF", "pos": "3B", "price": 12}, {"rank": 97, "taken": false, "name": "Gavin Williams", "team": "CLE", "pos": "SP", "price": 11}, {"rank": 98, "taken": false, "name": "Ozzie Albies", "team": "ATL", "pos": "2B", "price": 11}, {"rank": 99, "taken": false, "name": "Sandy Alcantara", "team": "MIA", "pos": "SP", "price": 11}, {"rank": 100, "taken": false, "name": "Trey Yesavage", "team": "TOR", "pos": "SP", "price": 11}, {"rank": 101, "taken": false, "name": "Jorge Polanco", "team": "NYM", "pos": "2B/DH", "price": 11}, {"rank": 102, "taken": false, "name": "Yainer Diaz", "team": "HOU", "pos": "C/DH", "price": 11}, {"rank": 103, "taken": false, "name": "Matthew Boyd", "team": "CHC", "pos": "SP", "price": 11}, {"rank": 104, "taken": false, "name": "Brandon Lowe", "team": "PIT", "pos": "2B", "price": 11}, {"rank": 105, "taken": false, "name": "Jurickson Profar", "team": "ATL", "pos": "OF", "price": 11}, {"rank": 106, "taken": false, "name": "Cade Horton", "team": "CHC", "pos": "SP", "price": 11}, {"rank": 107, "taken": false, "name": "Alec Burleson", "team": "STL", "pos": "OF/1B/DH", "price": 10}, {"rank": 108, "taken": false, "name": "Gerrit Cole", "team": "NYY", "pos": "SP", "price": 10}, {"rank": 109, "taken": false, "name": "Daylen Lile", "team": "WSH", "pos": "OF", "price": 10}, {"rank": 110, "taken": false, "name": "Dansby Swanson", "team": "CHC", "pos": "SS", "price": 9}, {"rank": 111, "taken": false, "name": "Joe Musgrove", "team": "SD", "pos": "SP", "price": 9}, {"rank": 112, "taken": true, "name": "Cam Schlittler", "team": "NYY", "pos": "SP", "price": 9}, {"rank": 113, "taken": true, "name": "Ivan Herrera", "team": "STL", "pos": "DH", "price": 9}, {"rank": 114, "taken": false, "name": "Gleyber Torres", "team": "DET", "pos": "2B", "price": 8}, {"rank": 115, "taken": true, "name": "Adley Rutschman", "team": "BAL", "pos": "C", "price": 8}, {"rank": 116, "taken": false, "name": "Jackson Holliday", "team": "BAL", "pos": "2B", "price": 8}, {"rank": 117, "taken": true, "name": "Michael Busch", "team": "CHC", "pos": "1B", "price": 8}, {"rank": 118, "taken": false, "name": "Bubba Chandler", "team": "PIT", "pos": "SP", "price": 7}, {"rank": 119, "taken": true, "name": "Luis Castillo", "team": "SEA", "pos": "SP", "price": 7}, {"rank": 120, "taken": true, "name": "Sal Stewart", "team": "CIN", "pos": "1B/3B", "price": 7}, {"rank": 121, "taken": false, "name": "Shota Imanaga", "team": "CHC", "pos": "SP", "price": 7}, {"rank": 122, "taken": true, "name": "Alec Bohm", "team": "PHI", "pos": "3B", "price": 7}, {"rank": 123, "taken": false, "name": "Marcus Semien", "team": "NYM", "pos": "2B", "price": 6}, {"rank": 124, "taken": true, "name": "Bryson Stott", "team": "PHI", "pos": "2B", "price": 6}, {"rank": 125, "taken": false, "name": "Luis Garcia Jr.", "team": "WSH", "pos": "2B", "price": 6}, {"rank": 126, "taken": false, "name": "Kris Bubic", "team": "KC", "pos": "SP", "price": 6}, {"rank": 127, "taken": false, "name": "Mike Trout", "team": "LAA", "pos": "OF/DH", "price": 6}, {"rank": 128, "taken": false, "name": "Carlos Rodon", "team": "NYY", "pos": "SP", "price": 6}, {"rank": 129, "taken": true, "name": "Griffin Jax", "team": "TB", "pos": "RP", "price": 6}, {"rank": 130, "taken": false, "name": "Daulton Varsho", "team": "TOR", "pos": "OF", "price": 6}, {"rank": 131, "taken": false, "name": "Max Muncy", "team": "LAD", "pos": "3B", "price": 6}, {"rank": 132, "taken": true, "name": "Dylan Crews", "team": "WSH", "pos": "OF", "price": 6}, {"rank": 133, "taken": true, "name": "Kazuma Okamoto", "team": "TOR", "pos": "3B", "price": 6}, {"rank": 134, "taken": true, "name": "Shane McClanahan", "team": "TB", "pos": "SP", "price": 6}, {"rank": 135, "taken": true, "name": "Royce Lewis", "team": "MIN", "pos": "3B", "price": 6}, {"rank": 136, "taken": false, "name": "Zac Gallen", "team": "ARI", "pos": "SP", "price": 6}, {"rank": 137, "taken": true, "name": "Caleb Durbin", "team": "BOS", "pos": "3B", "price": 6}, {"rank": 138, "taken": false, "name": "Kerry Carpenter", "team": "DET", "pos": "OF/DH", "price": 6}, {"rank": 139, "taken": false, "name": "Brendan Donovan", "team": "SEA", "pos": "2B", "price": 5}, {"rank": 140, "taken": true, "name": "Chandler Simpson", "team": "TB", "pos": "OF", "price": 5}, {"rank": 141, "taken": false, "name": "Robbie Ray", "team": "SF", "pos": "SP", "price": 5}, {"rank": 142, "taken": true, "name": "Matt McLain", "team": "CIN", "pos": "2B", "price": 5}, {"rank": 143, "taken": true, "name": "Dennis Santana", "team": "PIT", "pos": "RP", "price": 5}, {"rank": 144, "taken": true, "name": "Lawrence Butler", "team": "ATH", "pos": "OF", "price": 5}, {"rank": 145, "taken": true, "name": "Brenton Doyle", "team": "COL", "pos": "OF", "price": 5}, {"rank": 146, "taken": true, "name": "Abner Uribe", "team": "MIL", "pos": "RP", "price": 5}, {"rank": 147, "taken": false, "name": "Willson Contreras", "team": "BOS", "pos": "1B", "price": 5}, {"rank": 148, "taken": true, "name": "Ryan Walker", "team": "SF", "pos": "RP", "price": 5}, {"rank": 149, "taken": false, "name": "Bryce Miller", "team": "SEA", "pos": "SP", "price": 5}, {"rank": 150, "taken": false, "name": "Otto Lopez", "team": "MIA", "pos": "SS/2B", "price": 5}, {"rank": 151, "taken": true, "name": "Munetaka Murakami", "team": "CWS", "pos": "3B", "price": 5}, {"rank": 152, "taken": true, "name": "Tatsuya Imai", "team": "HOU", "pos": "SP", "price": 5}, {"rank": 153, "taken": false, "name": "Merrill Kelly", "team": "ARI", "pos": "SP", "price": 5}, {"rank": 154, "taken": false, "name": "Shane Baz", "team": "BAL", "pos": "SP", "price": 5}, {"rank": 155, "taken": false, "name": "Xander Bogaerts", "team": "SD", "pos": "SS", "price": 5}, {"rank": 156, "taken": true, "name": "Spencer Torkelson", "team": "DET", "pos": "1B", "price": 5}, {"rank": 157, "taken": false, "name": "Shane Bieber", "team": "TOR", "pos": "SP", "price": 5}, {"rank": 158, "taken": false, "name": "Gabriel Moreno", "team": "ARI", "pos": "C", "price": 5}, {"rank": 159, "taken": false, "name": "Wilyer Abreu", "team": "BOS", "pos": "OF", "price": 5}, {"rank": 160, "taken": true, "name": "Andrew Abbott", "team": "CIN", "pos": "SP", "price": 5}, {"rank": 161, "taken": false, "name": "Sal Frelick", "team": "MIL", "pos": "OF", "price": 5}, {"rank": 162, "taken": false, "name": "Adolis Garcia", "team": "PHI", "pos": "OF", "price": 4}, {"rank": 163, "taken": true, "name": "Colson Montgomery", "team": "CHW", "pos": "SS", "price": 4}, {"rank": 164, "taken": false, "name": "Jung Hoo Lee", "team": "SF", "pos": "OF", "price": 4}, {"rank": 165, "taken": false, "name": "Jonathan Aranda", "team": "TB", "pos": "1B", "price": 4}, {"rank": 166, "taken": true, "name": "Addison Barger", "team": "TOR", "pos": "3B/OF", "price": 4}, {"rank": 167, "taken": true, "name": "Bryan Abreu", "team": "HOU", "pos": "RP", "price": 4}, {"rank": 168, "taken": true, "name": "Jack Flaherty", "team": "DET", "pos": "SP", "price": 4}, {"rank": 169, "taken": false, "name": "Marcell Ozuna", "team": "PIT", "pos": "DH", "price": 4}, {"rank": 170, "taken": false, "name": "Miguel Vargas", "team": "CWS", "pos": "3B/1B", "price": 4}, {"rank": 171, "taken": false, "name": "Alejandro Kirk", "team": "TOR", "pos": "C", "price": 4}, {"rank": 172, "taken": true, "name": "Seranthony Dominguez", "team": "CWS", "pos": "RP", "price": 4}, {"rank": 173, "taken": false, "name": "Andrew Vaughn", "team": "MIL", "pos": "1B", "price": 4}, {"rank": 174, "taken": false, "name": "Christian Walker", "team": "HOU", "pos": "1B", "price": 4}, {"rank": 175, "taken": false, "name": "Aaron Nola", "team": "PHI", "pos": "SP", "price": 4}, {"rank": 176, "taken": false, "name": "Trent Grisham", "team": "NYY", "pos": "OF", "price": 4}, {"rank": 177, "taken": false, "name": "Jordan Beck", "team": "COL", "pos": "OF", "price": 4}, {"rank": 178, "taken": true, "name": "Samuel Basallo", "team": "BAL", "pos": "C", "price": 4}, {"rank": 179, "taken": false, "name": "Tommy Edman", "team": "LAD", "pos": "2B/OF", "price": 4}, {"rank": 180, "taken": true, "name": "Ramon Laureano", "team": "SD", "pos": "OF", "price": 4}, {"rank": 181, "taken": true, "name": "Heliot Ramos", "team": "SF", "pos": "OF", "price": 4}, {"rank": 182, "taken": false, "name": "Brett Baty", "team": "NYM", "pos": "3B", "price": 4}, {"rank": 183, "taken": true, "name": "Ezequiel Tovar", "team": "COL", "pos": "SS", "price": 4}, {"rank": 184, "taken": false, "name": "Josh Lowe", "team": "LAA", "pos": "OF", "price": 4}, {"rank": 185, "taken": false, "name": "Noah Cameron", "team": "KC", "pos": "SP", "price": 4}, {"rank": 186, "taken": false, "name": "Luis Arraez", "team": "SF", "pos": "1B/DH", "price": 4}, {"rank": 187, "taken": false, "name": "Edwin Uceta", "team": "TB", "pos": "RP", "price": 4}, {"rank": 188, "taken": false, "name": "Spencer Schwellenbach", "team": "ATL", "pos": "SP", "price": 4}, {"rank": 189, "taken": false, "name": "Colt Keith", "team": "DET", "pos": "2B/3B/DH", "price": 4}, {"rank": 190, "taken": true, "name": "Francisco Alvarez", "team": "NYM", "pos": "C", "price": 4}, {"rank": 191, "taken": false, "name": "Giancarlo Stanton", "team": "NYY", "pos": "OF", "price": 4}, {"rank": 192, "taken": false, "name": "Jack Leiter", "team": "TEX", "pos": "SP", "price": 3}, {"rank": 193, "taken": false, "name": "Logan Henderson", "team": "MIL", "pos": "SP", "price": 3}, {"rank": 194, "taken": false, "name": "Reid Detmers", "team": "LAA", "pos": "RP", "price": 3}, {"rank": 195, "taken": false, "name": "Kyle Teel", "team": "CWS", "pos": "C", "price": 3}, {"rank": 196, "taken": false, "name": "Kodai Senga", "team": "NYM", "pos": "SP", "price": 3}, {"rank": 197, "taken": false, "name": "Cody Ponce", "team": "TOR", "pos": "SP", "price": 3}, {"rank": 198, "taken": true, "name": "Carter Jensen", "team": "KC", "pos": "C", "price": 3}, {"rank": 199, "taken": false, "name": "TJ Friedl", "team": "CIN", "pos": "OF", "price": 3}, {"rank": 200, "taken": false, "name": "Ernie Clement", "team": "TOR", "pos": "3B/2B/SS", "price": 3}, {"rank": 201, "taken": false, "name": "Parker Messick", "team": "CLE", "pos": "SP", "price": 3}, {"rank": 202, "taken": false, "name": "Jasson Dominguez", "team": "NYY", "pos": "OF", "price": 3}, {"rank": 203, "taken": false, "name": "Spencer Steer", "team": "CIN", "pos": "1B", "price": 3}, {"rank": 204, "taken": false, "name": "Sean Manaea", "team": "NYM", "pos": "SP", "price": 3}, {"rank": 205, "taken": false, "name": "Kyle Manzardo", "team": "CLE", "pos": "1B", "price": 3}, {"rank": 206, "taken": false, "name": "Jameson Taillon", "team": "CHC", "pos": "SP", "price": 3}, {"rank": 207, "taken": false, "name": "J.T. Realmuto", "team": "PHI", "pos": "C", "price": 3}, {"rank": 208, "taken": false, "name": "Riley O'Brien", "team": "STL", "pos": "RP", "price": 3}, {"rank": 209, "taken": false, "name": "Nolan Schanuel", "team": "LAA", "pos": "1B", "price": 3}, {"rank": 210, "taken": false, "name": "Will Vest", "team": "DET", "pos": "RP", "price": 3}, {"rank": 211, "taken": false, "name": "Lenyn Sosa", "team": "CWS", "pos": "2B", "price": 3}, {"rank": 212, "taken": true, "name": "JJ Wetherholt", "team": "STL", "pos": "SS", "price": 3}, {"rank": 213, "taken": false, "name": "Connelly Early", "team": "BOS", "pos": "SP", "price": 3}, {"rank": 214, "taken": false, "name": "Carlos Correa", "team": "HOU", "pos": "SS/3B", "price": 3}, {"rank": 215, "taken": false, "name": "Bailey Ober", "team": "MIN", "pos": "SP", "price": 3}, {"rank": 216, "taken": false, "name": "Zebby Matthews", "team": "MIN", "pos": "SP", "price": 3}, {"rank": 217, "taken": true, "name": "Justin Crawford", "team": "PHI", "pos": "OF", "price": 3}, {"rank": 218, "taken": false, "name": "Ryne Nelson", "team": "ARI", "pos": "SP/RP", "price": 3}, {"rank": 219, "taken": true, "name": "Robert Suarez", "team": "ATL", "pos": "RP", "price": 3}, {"rank": 220, "taken": false, "name": "Mickey Moniak", "team": "COL", "pos": "OF", "price": 3}, {"rank": 221, "taken": true, "name": "Bryce Eldridge", "team": "SF", "pos": "1B", "price": 3}, {"rank": 222, "taken": true, "name": "Roki Sasaki", "team": "LAD", "pos": "SP", "price": 3}, {"rank": 223, "taken": false, "name": "Shane Smith", "team": "CWS", "pos": "SP", "price": 3}, {"rank": 224, "taken": false, "name": "Yusei Kikuchi", "team": "LAA", "pos": "SP", "price": 3}, {"rank": 225, "taken": false, "name": "Pablo Lopez", "team": "MIN", "pos": "SP", "price": 3}, {"rank": 226, "taken": false, "name": "Jeremiah Estrada", "team": "SD", "pos": "RP", "price": 3}, {"rank": 227, "taken": false, "name": "Grayson Rodriguez", "team": "LAA", "pos": "SP", "price": 3}, {"rank": 228, "taken": false, "name": "Jonathan India", "team": "KC", "pos": "2B/3B/OF/DH", "price": 3}, {"rank": 229, "taken": true, "name": "Jac Caglianone", "team": "KC", "pos": "1B", "price": 3}, {"rank": 230, "taken": true, "name": "Robert Garcia", "team": "TEX", "pos": "RP", "price": 3}, {"rank": 231, "taken": false, "name": "Kyle Finnegan", "team": "DET", "pos": "RP", "price": 3}, {"rank": 232, "taken": false, "name": "Garrett Whitlock", "team": "BOS", "pos": "RP", "price": 3}, {"rank": 233, "taken": false, "name": "Austin Wells", "team": "NYY", "pos": "C", "price": 3}, {"rank": 234, "taken": false, "name": "Jake Cronenworth", "team": "SD", "pos": "2B", "price": 3}, {"rank": 235, "taken": false, "name": "Casey Mize", "team": "DET", "pos": "SP", "price": 3}, {"rank": 236, "taken": false, "name": "Colton Cowser", "team": "BAL", "pos": "OF", "price": 3}, {"rank": 237, "taken": false, "name": "Masyn Winn", "team": "STL", "pos": "SS", "price": 3}, {"rank": 238, "taken": true, "name": "Jordan Lawlar", "team": "ARI", "pos": "3B", "price": 3}, {"rank": 239, "taken": false, "name": "Justin Steele", "team": "CHC", "pos": "SP", "price": 3}, {"rank": 240, "taken": false, "name": "Ryan O'Hearn", "team": "PIT", "pos": "1B/OF/DH", "price": 3}, {"rank": 241, "taken": false, "name": "Brady Singer", "team": "CIN", "pos": "SP", "price": 3}, {"rank": 242, "taken": false, "name": "Quinn Priester", "team": "MIL", "pos": "SP", "price": 2}, {"rank": 243, "taken": false, "name": "Jose Soriano", "team": "LAA", "pos": "SP", "price": 2}, {"rank": 244, "taken": false, "name": "Matt Wallner", "team": "MIN", "pos": "OF", "price": 2}, {"rank": 245, "taken": false, "name": "Jeff McNeil", "team": "ATH", "pos": "2B/OF", "price": 2}, {"rank": 246, "taken": false, "name": "Andres Gimenez", "team": "TOR", "pos": "2B", "price": 2}, {"rank": 247, "taken": false, "name": "Willi Castro", "team": "COL", "pos": "OF/2B/3B/SS", "price": 2}, {"rank": 248, "taken": false, "name": "Owen Caissie", "team": "MIA", "pos": "OF", "price": 2}, {"rank": 249, "taken": false, "name": "Nick Martinez", "team": "TB", "pos": "SP", "price": 2}, {"rank": 250, "taken": false, "name": "Mitch Keller", "team": "PIT", "pos": "SP", "price": 2}, {"rank": 251, "taken": false, "name": "Reynaldo Lopez", "team": "ATL", "pos": "SP", "price": 2}, {"rank": 252, "taken": false, "name": "Clay Holmes", "team": "NYM", "pos": "SP", "price": 2}, {"rank": 253, "taken": false, "name": "Dillon Dingler", "team": "DET", "pos": "C", "price": 2}, {"rank": 254, "taken": false, "name": "Mark Vientos", "team": "NYM", "pos": "3B", "price": 2}, {"rank": 255, "taken": false, "name": "Nolan Arenado", "team": "ARI", "pos": "3B", "price": 2}, {"rank": 256, "taken": true, "name": "Kevin McGonigle", "team": "DET", "pos": "SS", "price": 2}, {"rank": 257, "taken": false, "name": "Carson Benge", "team": "NYM", "pos": "OF", "price": 2}, {"rank": 258, "taken": false, "name": "Chris Bassitt", "team": "BAL", "pos": "SP", "price": 2}, {"rank": 259, "taken": false, "name": "Josh Bell", "team": "MIN", "pos": "1B", "price": 2}, {"rank": 260, "taken": false, "name": "Luke Weaver", "team": "NYM", "pos": "RP", "price": 2}, {"rank": 261, "taken": false, "name": "Cam Smith", "team": "HOU", "pos": "OF", "price": 2}, {"rank": 262, "taken": false, "name": "Anthony Santander", "team": "TOR", "pos": "OF", "price": 2}, {"rank": 263, "taken": false, "name": "Chase DeLauter", "team": "CLE", "pos": "OF", "price": 2}, {"rank": 264, "taken": false, "name": "Kirby Yates", "team": "LAA", "pos": "RP", "price": 2}, {"rank": 265, "taken": false, "name": "Matt Brash", "team": "SEA", "pos": "RP", "price": 2}, {"rank": 266, "taken": false, "name": "Josh Jung", "team": "TEX", "pos": "3B", "price": 2}, {"rank": 267, "taken": false, "name": "Tanner Scott", "team": "LAD", "pos": "RP", "price": 2}, {"rank": 268, "taken": false, "name": "Anthony Volpe", "team": "NYY", "pos": "SS", "price": 2}, {"rank": 269, "taken": false, "name": "Hurston Waldrep", "team": "ATL", "pos": "SP", "price": 2}, {"rank": 270, "taken": false, "name": "JoJo Romero", "team": "STL", "pos": "RP", "price": 2}, {"rank": 271, "taken": false, "name": "Brayan Bello", "team": "BOS", "pos": "SP", "price": 2}, {"rank": 272, "taken": false, "name": "Matt Shaw", "team": "CHC", "pos": "3B", "price": 2}, {"rank": 273, "taken": false, "name": "Jordan Leasure", "team": "CWS", "pos": "RP", "price": 2}, {"rank": 274, "taken": false, "name": "Tyler O'Neill", "team": "BAL", "pos": "OF", "price": 2}, {"rank": 275, "taken": true, "name": "Ryan Weathers", "team": "NYY", "pos": "SP", "price": 2}, {"rank": 276, "taken": false, "name": "Cedric Mullins", "team": "TB", "pos": "OF", "price": 2}, {"rank": 277, "taken": false, "name": "Joey Cantillo", "team": "CLE", "pos": "RP/SP", "price": 2}, {"rank": 278, "taken": false, "name": "Nick Castellanos", "team": "SD", "pos": "OF", "price": 2}, {"rank": 279, "taken": false, "name": "Ian Seymour", "team": "TB", "pos": "RP/SP", "price": 2}, {"rank": 280, "taken": false, "name": "Adrian Morejon", "team": "SD", "pos": "RP", "price": 2}, {"rank": 281, "taken": false, "name": "Brandon Marsh", "team": "PHI", "pos": "OF", "price": 2}, {"rank": 282, "taken": false, "name": "Logan O'Hoppe", "team": "LAA", "pos": "C", "price": 2}, {"rank": 283, "taken": false, "name": "Christopher Morel", "team": "MIA", "pos": "OF", "price": 2}, {"rank": 284, "taken": false, "name": "Evan Carter", "team": "TEX", "pos": "OF", "price": 2}, {"rank": 285, "taken": false, "name": "Jacob Lopez", "team": "ATH", "pos": "SP", "price": 2}, {"rank": 286, "taken": false, "name": "Garrett Cleavinger", "team": "TB", "pos": "RP", "price": 2}, {"rank": 287, "taken": false, "name": "Seth Lugo", "team": "KC", "pos": "SP", "price": 2}, {"rank": 288, "taken": false, "name": "Austin Hays", "team": "CHW", "pos": "OF", "price": 2}, {"rank": 289, "taken": false, "name": "Brooks Baldwin", "team": "CHW", "pos": "2B", "price": 2}, {"rank": 290, "taken": false, "name": "David Peterson", "team": "NYM", "pos": "SP", "price": 2}, {"rank": 291, "taken": false, "name": "Robby Snelling", "team": "MIA", "pos": "SP", "price": 2}, {"rank": 292, "taken": false, "name": "Jesus Sanchez", "team": "TOR", "pos": "OF", "price": 2}, {"rank": 293, "taken": false, "name": "Michael Wacha", "team": "KC", "pos": "SP", "price": 2}, {"rank": 294, "taken": false, "name": "Jared Jones", "team": "PIT", "pos": "SP", "price": 2}, {"rank": 295, "taken": false, "name": "Luis Morales", "team": "ATH", "pos": "SP", "price": 2}, {"rank": 296, "taken": false, "name": "Jose Ferrer", "team": "SEA", "pos": "RP", "price": 2}, {"rank": 297, "taken": false, "name": "Carson Kelly", "team": "CHC", "pos": "C", "price": 2}, {"rank": 298, "taken": false, "name": "Lars Nootbaar", "team": "STL", "pos": "OF", "price": 2}, {"rank": 299, "taken": false, "name": "Camilo Doval", "team": "NYY", "pos": "RP", "price": 2}, {"rank": 300, "taken": false, "name": "Jorge Soler", "team": "LAA", "pos": "OF", "price": 2}, {"rank": 301, "taken": false, "name": "Edgar Quero", "team": "CHW", "pos": "C", "price": 2}, {"rank": 302, "taken": false, "name": "Braxton Ashcraft", "team": "PIT", "pos": "SP", "price": 2}, {"rank": 303, "taken": false, "name": "Dylan Beavers", "team": "BAL", "pos": "OF", "price": 2}, {"rank": 304, "taken": false, "name": "Steven Matz", "team": "TB", "pos": "RP", "price": 2}, {"rank": 305, "taken": false, "name": "Tyler Mahle", "team": "SF", "pos": "SP", "price": 2}, {"rank": 306, "taken": false, "name": "Andrew Kittredge", "team": "BAL", "pos": "RP", "price": 2}, {"rank": 307, "taken": false, "name": "Victor Scott II", "team": "STL", "pos": "OF", "price": 2}, {"rank": 308, "taken": true, "name": "Jose Caballero", "team": "NYY", "pos": "2B", "price": 2}, {"rank": 309, "taken": false, "name": "Phil Maton", "team": "CHC", "pos": "RP", "price": 2}, {"rank": 310, "taken": false, "name": "Will Warren", "team": "NYY", "pos": "SP", "price": 2}, {"rank": 311, "taken": false, "name": "Dominic Canzone", "team": "SEA", "pos": "OF", "price": 2}, {"rank": 312, "taken": false, "name": "Chad Patrick", "team": "MIL", "pos": "SP", "price": 1}, {"rank": 313, "taken": false, "name": "Tyler Stephenson", "team": "CIN", "pos": "C", "price": 1}, {"rank": 314, "taken": false, "name": "Grant Taylor", "team": "CWS", "pos": "RP", "price": 1}, {"rank": 315, "taken": false, "name": "Andrew Benintendi", "team": "CWS", "pos": "OF/DH", "price": 1}, {"rank": 316, "taken": true, "name": "Jake Burger", "team": "TEX", "pos": "1B", "price": 1}, {"rank": 317, "taken": false, "name": "Jordan Walker", "team": "STL", "pos": "Of", "price": 1}, {"rank": 318, "taken": false, "name": "Brooks Lee", "team": "MIN", "pos": "SS/2B/3B", "price": 1}, {"rank": 319, "taken": false, "name": "Brandon Pfaadt", "team": "ARI", "pos": "SP", "price": 1}, {"rank": 320, "taken": false, "name": "Robert Stephenson", "team": "LAA", "pos": "RP", "price": 1}, {"rank": 321, "taken": false, "name": "Jake McCarthy", "team": "COL", "pos": "OF", "price": 1}, {"rank": 322, "taken": false, "name": "Mark Leiter Jr.", "team": "ATH", "pos": "RP", "price": 1}, {"rank": 323, "taken": false, "name": "Max Scherzer", "team": "FA", "pos": "SP", "price": 1}, {"rank": 324, "taken": false, "name": "Colt Emerson", "team": "SEA", "pos": "SS", "price": 1}, {"rank": 325, "taken": false, "name": "Javier Assad", "team": "CHC", "pos": "SP", "price": 1}, {"rank": 326, "taken": false, "name": "Michael Kopech", "team": "FA", "pos": "RP", "price": 1}, {"rank": 327, "taken": false, "name": "Quinn Mathews", "team": "STL", "pos": "SP", "price": 1}, {"rank": 328, "taken": false, "name": "David Morgan", "team": "SD", "pos": "RP", "price": 1}, {"rank": 329, "taken": false, "name": "Hayden Birdsong", "team": "SF", "pos": "SP,RP", "price": 1}, {"rank": 330, "taken": false, "name": "Brad Lord", "team": "WSH", "pos": "SP,RP", "price": 1}, {"rank": 331, "taken": false, "name": "Elvis Alvarado", "team": "ATH", "pos": "RP", "price": 1}, {"rank": 332, "taken": false, "name": "Adbert Alzolay", "team": "NYM", "pos": "RP", "price": 1}, {"rank": 333, "taken": false, "name": "Eric Wagaman", "team": "MIN", "pos": "1B", "price": 1}, {"rank": 334, "taken": false, "name": "Tobias Myers", "team": "NYM", "pos": "SP,RP", "price": 1}, {"rank": 335, "taken": false, "name": "Matt Vierling", "team": "DET", "pos": "OF", "price": 1}, {"rank": 336, "taken": false, "name": "Ryan Yarbrough", "team": "NYY", "pos": "SP,RP", "price": 1}, {"rank": 337, "taken": false, "name": "Ryne Stanek", "team": "STL", "pos": "RP", "price": 1}, {"rank": 338, "taken": false, "name": "Leo De Vries", "team": "ATH", "pos": "SS", "price": 1}, {"rank": 339, "taken": false, "name": "Christian Encarnacion-Strand", "team": "CIN", "pos": "1B", "price": 1}, {"rank": 340, "taken": false, "name": "Mason Englert", "team": "TB", "pos": "RP", "price": 1}, {"rank": 341, "taken": false, "name": "Nick Mears", "team": "KC", "pos": "RP", "price": 1}, {"rank": 342, "taken": false, "name": "Robert Hassell III", "team": "WSH", "pos": "OF", "price": 1}, {"rank": 343, "taken": false, "name": "Luis Torrens", "team": "NYM", "pos": "C", "price": 1}, {"rank": 344, "taken": false, "name": "Jacob Webb", "team": "CHC", "pos": "RP", "price": 1}, {"rank": 345, "taken": false, "name": "AJ Blubaugh", "team": "HOU", "pos": "SP,RP", "price": 1}, {"rank": 346, "taken": false, "name": "Sean Newcomb", "team": "CWS", "pos": "SP,RP", "price": 1}, {"rank": 347, "taken": false, "name": "Kevin Kelly", "team": "TB", "pos": "RP", "price": 1}, {"rank": 348, "taken": false, "name": "Taylor Walls", "team": "TB", "pos": "SS", "price": 1}, {"rank": 349, "taken": false, "name": "Justin Wrobleski", "team": "LAD", "pos": "RP", "price": 1}, {"rank": 350, "taken": false, "name": "Emmanuel Rodriguez", "team": "MIN", "pos": "OF", "price": 1}, {"rank": 351, "taken": false, "name": "Chase Dollander", "team": "COL", "pos": "SP", "price": 1}, {"rank": 352, "taken": false, "name": "Cole Sulser", "team": "TB", "pos": "RP", "price": 1}, {"rank": 353, "taken": false, "name": "Enrique Bradfield Jr.", "team": "BAL", "pos": "OF", "price": 1}, {"rank": 354, "taken": false, "name": "Rob Zastryzny", "team": "MIL", "pos": "RP", "price": 1}, {"rank": 355, "taken": false, "name": "Greg Bird", "team": "FA", "pos": "1B", "price": 1}, {"rank": 356, "taken": false, "name": "Trevor McDonald", "team": "SF", "pos": "SP,RP", "price": 1}, {"rank": 357, "taken": false, "name": "Jacob Young", "team": "WSH", "pos": "OF", "price": 1}, {"rank": 358, "taken": false, "name": "Evan Phillips", "team": "LAD", "pos": "RP", "price": 1}, {"rank": 359, "taken": false, "name": "Luis Matos", "team": "SF", "pos": "OF", "price": 1}, {"rank": 360, "taken": false, "name": "Enyel De Los Santos", "team": "HOU", "pos": "RP", "price": 1}, {"rank": 361, "taken": false, "name": "Porter Hodge", "team": "CHC", "pos": "RP", "price": 1}, {"rank": 362, "taken": false, "name": "Brandon Eisert", "team": "CWS", "pos": "SP,RP", "price": 1}, {"rank": 363, "taken": false, "name": "Jonathan Bowlan", "team": "PHI", "pos": "RP", "price": 1}, {"rank": 364, "taken": false, "name": "Sawyer Gipson-Long", "team": "DET", "pos": "SP,RP", "price": 1}, {"rank": 365, "taken": false, "name": "Ryan Ritter", "team": "COL", "pos": "SS", "price": 1}, {"rank": 366, "taken": false, "name": "Mason Fluharty", "team": "TOR", "pos": "RP", "price": 1}, {"rank": 367, "taken": false, "name": "Connor Prielipp", "team": "MIN", "pos": "SP", "price": 1}, {"rank": 368, "taken": false, "name": "Griffin Canning", "team": "SD", "pos": "SP", "price": 1}, {"rank": 369, "taken": false, "name": "Jaxon Wiggins", "team": "CHC", "pos": "SP", "price": 1}, {"rank": 370, "taken": false, "name": "Bradgley Rodriguez", "team": "SD", "pos": "RP", "price": 1}, {"rank": 371, "taken": false, "name": "Richie Palacios", "team": "TB", "pos": "OF", "price": 1}, {"rank": 372, "taken": false, "name": "Coleman Crow", "team": "MIL", "pos": "SP", "price": 1}, {"rank": 373, "taken": false, "name": "Andruw Monasterio", "team": "BOS", "pos": "2B", "price": 1}, {"rank": 374, "taken": false, "name": "Austin Warren", "team": "NYM", "pos": "RP", "price": 1}, {"rank": 375, "taken": false, "name": "Ryan Brasier", "team": "TEX", "pos": "RP", "price": 1}, {"rank": 376, "taken": false, "name": "Justin Lawrence", "team": "PIT", "pos": "RP", "price": 1}, {"rank": 377, "taken": false, "name": "Daniel Schneemann", "team": "CLE", "pos": "SS", "price": 1}, {"rank": 378, "taken": false, "name": "Jalen Beeks", "team": "FA", "pos": "RP", "price": 1}, {"rank": 379, "taken": false, "name": "Otto Kemp", "team": "PHI", "pos": "3B", "price": 1}, {"rank": 380, "taken": false, "name": "Huascar Brazoban", "team": "NYM", "pos": "SP,RP", "price": 1}, {"rank": 381, "taken": false, "name": "Drey Jameson", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 382, "taken": false, "name": "Jeremiah Jackson", "team": "BAL", "pos": "3B", "price": 1}, {"rank": 383, "taken": false, "name": "Alek Manoah", "team": "LAA", "pos": "SP", "price": 1}, {"rank": 384, "taken": false, "name": "Ryan Fernandez", "team": "STL", "pos": "RP", "price": 1}, {"rank": 385, "taken": false, "name": "Jorge Mateo", "team": "ATL", "pos": "2B", "price": 1}, {"rank": 386, "taken": false, "name": "Bowden Francis", "team": "TOR", "pos": "SP", "price": 1}, {"rank": 387, "taken": false, "name": "JR Ritchie", "team": "ATL", "pos": "SP", "price": 1}, {"rank": 388, "taken": false, "name": "Dietrich Enns", "team": "BAL", "pos": "SP,RP", "price": 1}, {"rank": 389, "taken": false, "name": "Clarke Schmidt", "team": "NYY", "pos": "SP", "price": 1}, {"rank": 390, "taken": false, "name": "Will Benson", "team": "CIN", "pos": "OF", "price": 1}, {"rank": 391, "taken": false, "name": "Connor Wong", "team": "BOS", "pos": "C", "price": 1}, {"rank": 392, "taken": false, "name": "Caleb Ferguson", "team": "CIN", "pos": "RP", "price": 1}, {"rank": 393, "taken": false, "name": "George Valera", "team": "CLE", "pos": "OF", "price": 1}, {"rank": 394, "taken": false, "name": "Jordan Wicks", "team": "CHC", "pos": "SP,RP", "price": 1}, {"rank": 395, "taken": false, "name": "Tommy Pham", "team": "FA", "pos": "OF", "price": 1}, {"rank": 396, "taken": false, "name": "Stephen Kolek", "team": "KC", "pos": "SP", "price": 1}, {"rank": 397, "taken": false, "name": "Matt Gage", "team": "SF", "pos": "RP", "price": 1}, {"rank": 398, "taken": false, "name": "Felix Bautista", "team": "BAL", "pos": "RP", "price": 1}, {"rank": 399, "taken": false, "name": "Kaelen Culpepper", "team": "MIN", "pos": "SS", "price": 1}, {"rank": 400, "taken": false, "name": "Ezequiel Duran", "team": "TEX", "pos": "3B", "price": 1}, {"rank": 401, "taken": false, "name": "DL Hall", "team": "MIL", "pos": "SP,RP", "price": 1}, {"rank": 402, "taken": false, "name": "Michael Conforto", "team": "FA", "pos": "OF", "price": 1}, {"rank": 403, "taken": false, "name": "Spencer Bivens", "team": "SF", "pos": "RP", "price": 1}, {"rank": 404, "taken": false, "name": "Logan Allen", "team": "FA", "pos": "RP", "price": 1}, {"rank": 405, "taken": false, "name": "Hunter Dobbins", "team": "STL", "pos": "SP", "price": 1}, {"rank": 406, "taken": false, "name": "Brenan Hanifee", "team": "DET", "pos": "RP", "price": 1}, {"rank": 407, "taken": false, "name": "Blaine Crim", "team": "COL", "pos": "1B", "price": 1}, {"rank": 408, "taken": false, "name": "Ian Hamilton", "team": "ATL", "pos": "RP", "price": 1}, {"rank": 409, "taken": false, "name": "Jason Foley", "team": "SF", "pos": "RP", "price": 1}, {"rank": 410, "taken": false, "name": "Alejandro Osuna", "team": "TEX", "pos": "OF", "price": 1}, {"rank": 411, "taken": false, "name": "Jose Quintana", "team": "COL", "pos": "SP", "price": 1}, {"rank": 412, "taken": false, "name": "Taylor Clarke", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 413, "taken": false, "name": "Michael Massey", "team": "KC", "pos": "2B", "price": 1}, {"rank": 414, "taken": false, "name": "Grant Anderson", "team": "MIL", "pos": "RP", "price": 1}, {"rank": 415, "taken": false, "name": "Amed Rosario", "team": "NYY", "pos": "2B", "price": 1}, {"rank": 416, "taken": false, "name": "Noah Schultz", "team": "CWS", "pos": "SP", "price": 1}, {"rank": 417, "taken": false, "name": "Patrick Sandoval", "team": "BOS", "pos": "SP", "price": 1}, {"rank": 418, "taken": false, "name": "Scott Barlow", "team": "ATH", "pos": "RP", "price": 1}, {"rank": 419, "taken": false, "name": "Darell Hernaiz", "team": "ATH", "pos": "SS", "price": 1}, {"rank": 420, "taken": false, "name": "Lake Bachar", "team": "MIA", "pos": "RP", "price": 1}, {"rank": 421, "taken": false, "name": "Nelson Rada", "team": "LAA", "pos": "OF", "price": 1}, {"rank": 422, "taken": false, "name": "Casey Legumina", "team": "SEA", "pos": "RP", "price": 1}, {"rank": 423, "taken": false, "name": "Gage Jump", "team": "ATH", "pos": "SP", "price": 1}, {"rank": 424, "taken": false, "name": "Joel Payamps", "team": "ATL", "pos": "RP", "price": 1}, {"rank": 425, "taken": false, "name": "Randy Vasquez", "team": "SD", "pos": "SP", "price": 1}, {"rank": 426, "taken": false, "name": "Nathan Church", "team": "STL", "pos": "OF", "price": 1}, {"rank": 427, "taken": false, "name": "Yuki Matsui", "team": "SD", "pos": "RP", "price": 1}, {"rank": 428, "taken": false, "name": "Dauri Moreta", "team": "FA", "pos": "RP", "price": 1}, {"rank": 429, "taken": false, "name": "James McCann", "team": "ARI", "pos": "C", "price": 1}, {"rank": 430, "taken": false, "name": "Jimmy Herget", "team": "COL", "pos": "RP", "price": 1}, {"rank": 431, "taken": false, "name": "Cooper Criswell", "team": "SEA", "pos": "RP", "price": 1}, {"rank": 432, "taken": false, "name": "Ty France", "team": "SD", "pos": "1B", "price": 1}, {"rank": 433, "taken": false, "name": "Dylan Moore", "team": "FA", "pos": "2B", "price": 1}, {"rank": 434, "taken": false, "name": "Yoendrys Gomez", "team": "TB", "pos": "SP,RP", "price": 1}, {"rank": 435, "taken": false, "name": "Brock Stewart", "team": "LAD", "pos": "RP", "price": 1}, {"rank": 436, "taken": false, "name": "Cooper Ingle", "team": "CLE", "pos": "C", "price": 1}, {"rank": 437, "taken": false, "name": "Keider Montero", "team": "DET", "pos": "SP,RP", "price": 1}, {"rank": 438, "taken": false, "name": "Cole Henry", "team": "WSH", "pos": "RP", "price": 1}, {"rank": 439, "taken": false, "name": "Gavin Stone", "team": "LAD", "pos": "SP", "price": 1}, {"rank": 440, "taken": false, "name": "Josh Sborz", "team": "TEX", "pos": "RP", "price": 1}, {"rank": 441, "taken": false, "name": "Jonathan Loaisiga", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 442, "taken": false, "name": "Kade Anderson", "team": "SEA", "pos": "SP", "price": 1}, {"rank": 443, "taken": false, "name": "Michael Kelly", "team": "ATH", "pos": "RP", "price": 1}, {"rank": 444, "taken": false, "name": "Tanner McDougal", "team": "CWS", "pos": "SP", "price": 1}, {"rank": 445, "taken": false, "name": "David Hamilton", "team": "MIL", "pos": "SS", "price": 1}, {"rank": 446, "taken": false, "name": "Ricky Tiedemann", "team": "TOR", "pos": "SP", "price": 1}, {"rank": 447, "taken": false, "name": "Curtis Mead", "team": "CWS", "pos": "3B", "price": 1}, {"rank": 448, "taken": false, "name": "Colton Gordon", "team": "HOU", "pos": "SP,RP", "price": 1}, {"rank": 449, "taken": false, "name": "Trey Gibson", "team": "BAL", "pos": "SP", "price": 1}, {"rank": 450, "taken": false, "name": "Alex Freeland", "team": "LAD", "pos": "SS", "price": 1}, {"rank": 451, "taken": false, "name": "Ben Casparius", "team": "LAD", "pos": "SP,RP", "price": 1}, {"rank": 452, "taken": false, "name": "Jose Trevino", "team": "CIN", "pos": "C", "price": 1}, {"rank": 453, "taken": false, "name": "Craig Yoho", "team": "MIL", "pos": "RP", "price": 1}, {"rank": 454, "taken": false, "name": "Joel Peguero", "team": "SF", "pos": "RP", "price": 1}, {"rank": 455, "taken": false, "name": "George Klassen", "team": "LAA", "pos": "SP", "price": 1}, {"rank": 456, "taken": false, "name": "Yariel Rodriguez", "team": "TOR", "pos": "RP", "price": 1}, {"rank": 457, "taken": false, "name": "Gary Sanchez", "team": "MIL", "pos": "C", "price": 1}, {"rank": 458, "taken": false, "name": "Braxton Fulford", "team": "COL", "pos": "C", "price": 1}, {"rank": 459, "taken": false, "name": "Brody Hopkins", "team": "TB", "pos": "SP", "price": 1}, {"rank": 460, "taken": false, "name": "Daniel Lynch", "team": "KC", "pos": "RP", "price": 1}, {"rank": 461, "taken": false, "name": "Carlos Santana", "team": "ARI", "pos": "1B", "price": 1}, {"rank": 462, "taken": false, "name": "Jon Gray", "team": "FA", "pos": "RP", "price": 1}, {"rank": 463, "taken": false, "name": "Craig Kimbrel", "team": "NYM", "pos": "RP", "price": 1}, {"rank": 464, "taken": false, "name": "Walker Buehler", "team": "SD", "pos": "SP", "price": 1}, {"rank": 465, "taken": false, "name": "Tyler Alexander", "team": "TEX", "pos": "SP,RP", "price": 1}, {"rank": 466, "taken": false, "name": "Kevin Alcantara", "team": "CHC", "pos": "OF", "price": 1}, {"rank": 467, "taken": false, "name": "Drew Gilbert", "team": "SF", "pos": "OF", "price": 1}, {"rank": 468, "taken": false, "name": "Carlos Vargas", "team": "FA", "pos": "SS", "price": 1}, {"rank": 469, "taken": false, "name": "Hayden Harris", "team": "ATL", "pos": "RP", "price": 1}, {"rank": 470, "taken": false, "name": "Tim Hill", "team": "NYY", "pos": "RP", "price": 1}, {"rank": 471, "taken": false, "name": "Andre Pallante", "team": "STL", "pos": "SP", "price": 1}, {"rank": 472, "taken": false, "name": "Kade Strowd", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 473, "taken": false, "name": "Andrew Chafin", "team": "MIN", "pos": "RP", "price": 1}, {"rank": 474, "taken": false, "name": "Anthony Banda", "team": "MIN", "pos": "RP", "price": 1}, {"rank": 475, "taken": false, "name": "Michael Lorenzen", "team": "COL", "pos": "SP,RP", "price": 1}, {"rank": 476, "taken": false, "name": "Cade Gibson", "team": "MIA", "pos": "RP", "price": 1}, {"rank": 477, "taken": false, "name": "Nolan Jones", "team": "CLE", "pos": "OF", "price": 1}, {"rank": 478, "taken": false, "name": "Ryan Zeferjahn", "team": "LAA", "pos": "RP", "price": 1}, {"rank": 479, "taken": false, "name": "Carson Whisenhunt", "team": "SF", "pos": "SP", "price": 1}, {"rank": 480, "taken": false, "name": "Nick Raquet", "team": "STL", "pos": "RP", "price": 1}, {"rank": 481, "taken": false, "name": "Jerar Encarnacion", "team": "SF", "pos": "OF", "price": 1}, {"rank": 482, "taken": false, "name": "Andrew Alvarez", "team": "WSH", "pos": "SP", "price": 1}, {"rank": 483, "taken": false, "name": "Jesus Rodriguez", "team": "SF", "pos": "C", "price": 1}, {"rank": 484, "taken": false, "name": "Nick Yorke", "team": "PIT", "pos": "2B", "price": 1}, {"rank": 485, "taken": false, "name": "Hayden Wesneski", "team": "HOU", "pos": "SP", "price": 1}, {"rank": 486, "taken": false, "name": "Heston Kjerstad", "team": "BAL", "pos": "OF", "price": 1}, {"rank": 487, "taken": false, "name": "Jose Leclerc", "team": "FA", "pos": "RP", "price": 1}, {"rank": 488, "taken": false, "name": "Thairo Estrada", "team": "FA", "pos": "2B", "price": 1}, {"rank": 489, "taken": false, "name": "Ryan Ward", "team": "LAD", "pos": "OF", "price": 1}, {"rank": 490, "taken": false, "name": "Tristan Beck", "team": "SF", "pos": "RP", "price": 1}, {"rank": 491, "taken": false, "name": "Eric Orze", "team": "MIN", "pos": "RP", "price": 1}, {"rank": 492, "taken": false, "name": "Dane Myers", "team": "CIN", "pos": "OF", "price": 1}, {"rank": 493, "taken": false, "name": "Yohan Ramirez", "team": "PIT", "pos": "RP", "price": 1}, {"rank": 494, "taken": false, "name": "Ben Williamson", "team": "TB", "pos": "3B", "price": 1}, {"rank": 495, "taken": false, "name": "Cole Winn", "team": "TEX", "pos": "RP", "price": 1}, {"rank": 496, "taken": false, "name": "Hagen Smith", "team": "CWS", "pos": "SP", "price": 1}, {"rank": 497, "taken": false, "name": "James McArthur", "team": "KC", "pos": "RP", "price": 1}, {"rank": 498, "taken": false, "name": "Tyler Austin", "team": "CHC", "pos": "1B", "price": 1}, {"rank": 499, "taken": false, "name": "Emerson Hancock", "team": "SEA", "pos": "SP,RP", "price": 1}, {"rank": 500, "taken": false, "name": "Kai-Wei Teng", "team": "HOU", "pos": "SP,RP", "price": 1}, {"rank": 501, "taken": false, "name": "Dylan Ross", "team": "NYM", "pos": "RP", "price": 1}, {"rank": 502, "taken": false, "name": "Mitch Bratt", "team": "ARI", "pos": "SP", "price": 1}, {"rank": 503, "taken": false, "name": "Justin Hagenman", "team": "NYM", "pos": "RP", "price": 1}, {"rank": 504, "taken": false, "name": "Gordon Graceffo", "team": "STL", "pos": "RP", "price": 1}, {"rank": 505, "taken": false, "name": "Josiah Gray", "team": "WSH", "pos": "SP", "price": 1}, {"rank": 506, "taken": false, "name": "James Outman", "team": "MIN", "pos": "OF", "price": 1}, {"rank": 507, "taken": false, "name": "Rob Refsnyder", "team": "SEA", "pos": "OF", "price": 1}, {"rank": 508, "taken": false, "name": "Andre Granillo", "team": "WSH", "pos": "RP", "price": 1}, {"rank": 509, "taken": false, "name": "Ty Johnson", "team": "TB", "pos": "SP,RP", "price": 1}, {"rank": 510, "taken": false, "name": "Evan Sisk", "team": "PIT", "pos": "RP", "price": 1}, {"rank": 511, "taken": false, "name": "Kendry Rojas", "team": "MIN", "pos": "SP", "price": 1}, {"rank": 512, "taken": false, "name": "Didier Fuentes", "team": "ATL", "pos": "SP", "price": 1}, {"rank": 513, "taken": false, "name": "Cristian Mena", "team": "ARI", "pos": "SP,RP", "price": 1}, {"rank": 514, "taken": false, "name": "Mitch Garver", "team": "SEA", "pos": "C", "price": 1}, {"rank": 515, "taken": false, "name": "Anthony Nunez", "team": "BAL", "pos": "RP", "price": 1}, {"rank": 516, "taken": false, "name": "Tyler Ferguson", "team": "ATH", "pos": "RP", "price": 1}, {"rank": 517, "taken": false, "name": "Max Anderson", "team": "DET", "pos": "2B", "price": 1}, {"rank": 518, "taken": false, "name": "Ron Marinaccio", "team": "SD", "pos": "RP", "price": 1}, {"rank": 519, "taken": false, "name": "Justin Bruihl", "team": "STL", "pos": "RP", "price": 1}, {"rank": 520, "taken": false, "name": "Oswald Peraza", "team": "LAA", "pos": "3B", "price": 1}, {"rank": 521, "taken": false, "name": "Kohl Drake", "team": "ARI", "pos": "SP", "price": 1}, {"rank": 522, "taken": false, "name": "Joey Loperfido", "team": "HOU", "pos": "OF", "price": 1}, {"rank": 523, "taken": false, "name": "Paul Blackburn", "team": "NYY", "pos": "SP,RP", "price": 1}, {"rank": 524, "taken": false, "name": "Chris Paddack", "team": "MIA", "pos": "SP,RP", "price": 1}, {"rank": 525, "taken": false, "name": "Chase Silseth", "team": "LAA", "pos": "RP", "price": 1}, {"rank": 526, "taken": false, "name": "Michael Toglia", "team": "CIN", "pos": "1B", "price": 1}, {"rank": 527, "taken": false, "name": "DJ Herz", "team": "WSH", "pos": "SP", "price": 1}, {"rank": 528, "taken": false, "name": "Andrew Morris", "team": "MIN", "pos": "SP", "price": 1}, {"rank": 529, "taken": false, "name": "Josue Briceno", "team": "DET", "pos": "C", "price": 1}, {"rank": 530, "taken": false, "name": "Deyvison De Los Santos", "team": "MIA", "pos": "3B", "price": 1}, {"rank": 531, "taken": false, "name": "Alex Lange", "team": "KC", "pos": "RP", "price": 1}, {"rank": 532, "taken": false, "name": "Ryan Bliss", "team": "SEA", "pos": "2B", "price": 1}, {"rank": 533, "taken": false, "name": "Andrew Walters", "team": "CLE", "pos": "RP", "price": 1}, {"rank": 534, "taken": false, "name": "Maximo Acosta", "team": "MIA", "pos": "SS", "price": 1}, {"rank": 535, "taken": false, "name": "Steven Cruz", "team": "KC", "pos": "RP", "price": 1}, {"rank": 536, "taken": false, "name": "Ramon Urias", "team": "STL", "pos": "3B", "price": 1}, {"rank": 537, "taken": false, "name": "Matt Pushard", "team": "STL", "pos": "RP", "price": 1}, {"rank": 538, "taken": false, "name": "Ryan Clifford", "team": "NYM", "pos": "1B", "price": 1}, {"rank": 539, "taken": false, "name": "Ethan Pecko", "team": "HOU", "pos": "SP", "price": 1}, {"rank": 540, "taken": false, "name": "Charlie Morton", "team": "FA", "pos": "SP,RP", "price": 1}, {"rank": 541, "taken": false, "name": "Liam Doyle", "team": "STL", "pos": "SP", "price": 1}, {"rank": 542, "taken": false, "name": "Jose Urquidy", "team": "PIT", "pos": "RP", "price": 1}, {"rank": 543, "taken": false, "name": "Reiver Sanmartin", "team": "SF", "pos": "RP", "price": 1}, {"rank": 544, "taken": false, "name": "Chase Lee", "team": "TOR", "pos": "RP", "price": 1}, {"rank": 545, "taken": false, "name": "Everson Pereira", "team": "CWS", "pos": "OF", "price": 1}, {"rank": 546, "taken": false, "name": "JT Brubaker", "team": "SF", "pos": "RP", "price": 1}, {"rank": 547, "taken": false, "name": "Blake Perkins", "team": "MIL", "pos": "OF", "price": 1}, {"rank": 548, "taken": false, "name": "Keaton Winn", "team": "SF", "pos": "SP,RP", "price": 1}, {"rank": 549, "taken": false, "name": "Yanquiel Fernandez", "team": "NYY", "pos": "OF", "price": 1}, {"rank": 550, "taken": false, "name": "Zack Kelly", "team": "BOS", "pos": "SP,RP", "price": 1}, {"rank": 551, "taken": false, "name": "Liam Hendriks", "team": "MIN", "pos": "RP", "price": 1}, {"rank": 552, "taken": false, "name": "Jose Fermin", "team": "STL", "pos": "2B", "price": 1}, {"rank": 553, "taken": false, "name": "Jake Irvin", "team": "WSH", "pos": "SP", "price": 1}, {"rank": 554, "taken": false, "name": "Jordan Montgomery", "team": "TEX", "pos": "SP", "price": 1}, {"rank": 555, "taken": false, "name": "Edgardo Henriquez", "team": "LAD", "pos": "RP", "price": 1}, {"rank": 556, "taken": false, "name": "Blade Tidwell", "team": "SF", "pos": "SP,RP", "price": 1}, {"rank": 557, "taken": false, "name": "Garrett Hawkins", "team": "SD", "pos": "RP", "price": 1}, {"rank": 558, "taken": false, "name": "Rowdy Tellez", "team": "FA", "pos": "1B", "price": 1}, {"rank": 559, "taken": false, "name": "Yaramil Hiraldo", "team": "BAL", "pos": "RP", "price": 1}, {"rank": 560, "taken": false, "name": "T.J. Rumfield", "team": "COL", "pos": "1B", "price": 1}, {"rank": 561, "taken": false, "name": "Jose Corniell", "team": "TEX", "pos": "SP,RP", "price": 1}, {"rank": 562, "taken": false, "name": "Wilmer Flores", "team": "FA", "pos": "1B", "price": 1}, {"rank": 563, "taken": false, "name": "Tyler Phillips", "team": "MIA", "pos": "RP", "price": 1}, {"rank": 564, "taken": false, "name": "Kyle Hurt", "team": "LAD", "pos": "RP", "price": 1}, {"rank": 565, "taken": false, "name": "Joey Wentz", "team": "ATL", "pos": "SP,RP", "price": 1}, {"rank": 566, "taken": false, "name": "Luinder Avila", "team": "KC", "pos": "RP", "price": 1}, {"rank": 567, "taken": false, "name": "Alan Roden", "team": "MIN", "pos": "OF", "price": 1}, {"rank": 568, "taken": false, "name": "Luis Perales", "team": "WSH", "pos": "SP,RP", "price": 1}, {"rank": 569, "taken": false, "name": "Luke Little", "team": "CHC", "pos": "RP", "price": 1}, {"rank": 570, "taken": false, "name": "Warming Bernabel", "team": "WSH", "pos": "1B", "price": 1}, {"rank": 571, "taken": false, "name": "Dylan Dodd", "team": "ATL", "pos": "RP", "price": 1}, {"rank": 572, "taken": false, "name": "Kemp Alderman", "team": "MIA", "pos": "OF", "price": 1}, {"rank": 573, "taken": false, "name": "Brandyn Garcia", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 574, "taken": false, "name": "Juan Mejia", "team": "COL", "pos": "RP", "price": 1}, {"rank": 575, "taken": false, "name": "Easton McGee", "team": "MIL", "pos": "RP", "price": 1}, {"rank": 576, "taken": false, "name": "Jahmai Jones", "team": "DET", "pos": "OF", "price": 1}, {"rank": 577, "taken": false, "name": "Danny Young", "team": "ATL", "pos": "RP", "price": 1}, {"rank": 578, "taken": false, "name": "Daniel Espino", "team": "CLE", "pos": "SP", "price": 1}, {"rank": 579, "taken": false, "name": "Ryan Watson", "team": "BOS", "pos": "SP,RP", "price": 1}, {"rank": 580, "taken": false, "name": "Jesus Made", "team": "MIL", "pos": "SS", "price": 1}, {"rank": 581, "taken": false, "name": "Mike Vasil", "team": "CWS", "pos": "SP,RP", "price": 1}, {"rank": 582, "taken": false, "name": "Nacho Alvarez Jr.", "team": "ATL", "pos": "3B", "price": 1}, {"rank": 583, "taken": false, "name": "Tony Gonsolin", "team": "FA", "pos": "SP", "price": 1}, {"rank": 584, "taken": false, "name": "Tyrone Taylor", "team": "NYM", "pos": "OF", "price": 1}, {"rank": 585, "taken": false, "name": "Andrew Hoffmann", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 586, "taken": false, "name": "Yohel Pozo", "team": "STL", "pos": "C", "price": 1}, {"rank": 587, "taken": false, "name": "Manuel Rodriguez", "team": "TB", "pos": "RP", "price": 1}, {"rank": 588, "taken": false, "name": "Carlos Lagrange", "team": "NYY", "pos": "SP", "price": 1}, {"rank": 589, "taken": false, "name": "Bryan Torres", "team": "STL", "pos": "OF", "price": 1}, {"rank": 590, "taken": false, "name": "Kervin Castro", "team": "NYY", "pos": "RP", "price": 1}, {"rank": 591, "taken": false, "name": "Ronel Blanco", "team": "HOU", "pos": "SP", "price": 1}, {"rank": 592, "taken": false, "name": "Jarlin Susana", "team": "WSH", "pos": "SP", "price": 1}, {"rank": 593, "taken": false, "name": "Travis d'Arnaud", "team": "LAA", "pos": "C", "price": 1}, {"rank": 594, "taken": false, "name": "Bryan Hoeing", "team": "SD", "pos": "RP", "price": 1}, {"rank": 595, "taken": false, "name": "Austin Wynns", "team": "ATH", "pos": "C", "price": 1}, {"rank": 596, "taken": false, "name": "Hunter Bigge", "team": "TB", "pos": "RP", "price": 1}, {"rank": 597, "taken": false, "name": "Jake Rogers", "team": "DET", "pos": "C", "price": 1}, {"rank": 598, "taken": false, "name": "Philip Abner", "team": "ARI", "pos": "RP", "price": 1}, {"rank": 599, "taken": false, "name": "Caden Dana", "team": "LAA", "pos": "SP", "price": 1}, {"rank": 600, "taken": false, "name": "Yosver Zulueta", "team": "SEA", "pos": "RP", "price": 1}];
+const INIT_MANAGERS = {"FR":{"roster":[{"name":"Jackson Chourio","price":16,"pos":"OF","keeper":true,"round":null},{"name":"Geraldo Perdomo","price":7,"pos":"SS","keeper":true,"round":null},{"name":"Konnor Griffin","price":7,"pos":"SS,OF","keeper":true,"round":null},{"name":"Bobby Witt Jr.","price":51,"pos":"SS","keeper":false,"round":1},{"name":"Sal Stewart","price":7,"pos":"1B/3B","keeper":false,"round":2},{"name":"Manny Machado","price":30,"pos":"3B","keeper":false,"round":3},{"name":"Carter Jensen","price":3,"pos":"C","keeper":false,"round":4},{"name":"Ceddanne Rafaela","price":12,"pos":"2B,OF","keeper":false,"round":8},{"name":"Yoshinobu Yamamoto","price":29,"pos":"SP","keeper":true,"round":null},{"name":"Jacob deGrom","price":11,"pos":"SP","keeper":true,"round":null},{"name":"Dennis Santana","price":5,"pos":"RP","keeper":false,"round":5},{"name":"Ranger Suarez","price":3,"pos":"RP","keeper":false,"round":6},{"name":"Roki Sasaki","price":3,"pos":"SP","keeper":false,"round":7},{"name":"Kris Bubic","price":6,"pos":"SP","keeper":false,"round":9}]},"JK":{"roster":[{"name":"Ronald Acuna Jr.","price":30,"pos":"OF","keeper":true,"round":null},{"name":"Nico Hoerner","price":13,"pos":"2B","keeper":true,"round":null},{"name":"Shea Langeliers","price":13,"pos":"C","keeper":true,"round":null},{"name":"Trevor Story","price":7,"pos":"SS","keeper":true,"round":null},{"name":"Julio Rodriguez","price":42,"pos":"OF","keeper":false,"round":1},{"name":"Michael Busch","price":8,"pos":"1B","keeper":false,"round":2},{"name":"JJ Wetherholt","price":3,"pos":"SS","keeper":false,"round":3},{"name":"Bryan Reynolds","price":12,"pos":"OF","keeper":false,"round":5},{"name":"Matt Wallner","price":2,"pos":"OF","keeper":false,"round":9},{"name":"Trevor Rogers","price":6,"pos":"SP","keeper":true,"round":null},{"name":"Framber Valdez","price":21,"pos":"SP","keeper":false,"round":4},{"name":"Kenley Jansen","price":12,"pos":"RP","keeper":false,"round":6},{"name":"Daniel Palencia","price":14,"pos":"RP","keeper":false,"round":7},{"name":"Shota Imanaga","price":7,"pos":"SP","keeper":false,"round":8}]},"MB":{"roster":[{"name":"Bryce Harper","price":26,"pos":"1B","keeper":true,"round":null},{"name":"Tyler Soderstrom","price":7,"pos":"1B,OF","keeper":true,"round":null},{"name":"Hunter Goodman","price":6,"pos":"C","keeper":true,"round":null},{"name":"Gunnar Henderson","price":41,"pos":"SS","keeper":false,"round":1},{"name":"Jac Caglianone","price":3,"pos":"1B,OF","keeper":false,"round":2},{"name":"Kazuma Okamoto","price":6,"pos":"3B","keeper":false,"round":3},{"name":"Caleb Durbin","price":6,"pos":"2B,3B","keeper":false,"round":6},{"name":"Heliot Ramos","price":4,"pos":"OF","keeper":false,"round":7},{"name":"Bryce Miller","price":13,"pos":"SP","keeper":true,"round":null},{"name":"Eury Perez","price":6,"pos":"RP","keeper":true,"round":null},{"name":"Griffin Jax","price":6,"pos":"RP","keeper":false,"round":4},{"name":"Cade Smith","price":21,"pos":"RP","keeper":false,"round":5},{"name":"Bubba Chandler","price":7,"pos":"SP","keeper":false,"round":8},{"name":"Braxton Ashcraft","price":2,"pos":"SP","keeper":false,"round":9}]},"MV":{"roster":[{"name":"Shohei Ohtani","price":59,"pos":"Util","keeper":true,"round":null},{"name":"Kyle Schwarber","price":28,"pos":"OF","keeper":true,"round":null},{"name":"Elly De La Cruz","price":16,"pos":"SS","keeper":true,"round":null},{"name":"Roman Anthony","price":7,"pos":"OF","keeper":true,"round":null},{"name":"Mookie Betts","price":23,"pos":"SS,OF","keeper":false,"round":3},{"name":"Ivan Herrera","price":9,"pos":"C","keeper":false,"round":4},{"name":"Jose Caballero","price":2,"pos":"2B","keeper":false,"round":7},{"name":"Jackson Holliday","price":8,"pos":"2B,SS","keeper":false,"round":8},{"name":"Alejandro Kirk","price":4,"pos":"C","keeper":false,"round":9},{"name":"Cristopher Sanchez","price":11,"pos":"SP","keeper":true,"round":null},{"name":"Freddy Peralta","price":20,"pos":"SP","keeper":false,"round":1},{"name":"Luis Castillo","price":7,"pos":"SP","keeper":false,"round":2},{"name":"Abner Uribe","price":5,"pos":"RP","keeper":false,"round":5},{"name":"Andrew Abbott","price":5,"pos":"SP","keeper":false,"round":6}]},"GE":{"roster":[{"name":"Juan Soto","price":57,"pos":"OF","keeper":true,"round":null},{"name":"Zach Neto","price":16,"pos":"SS","keeper":true,"round":null},{"name":"Drake Baldwin","price":12,"pos":"C","keeper":true,"round":null},{"name":"Austin Riley","price":26,"pos":"3B","keeper":false,"round":2},{"name":"Samuel Basallo","price":4,"pos":"C","keeper":false,"round":3},{"name":"Ramon Laureano","price":4,"pos":"OF","keeper":false,"round":4},{"name":"Randy Arozarena","price":17,"pos":"OF","keeper":false,"round":8},{"name":"Christian Walker","price":4,"pos":"1B","keeper":false,"round":9},{"name":"Paul Skenes","price":11,"pos":"SP","keeper":true,"round":null},{"name":"Jesus Luzardo","price":8,"pos":"SP","keeper":true,"round":null},{"name":"Logan Webb","price":27,"pos":"SP","keeper":false,"round":1},{"name":"Seranthony Dominguez","price":4,"pos":"RP","keeper":false,"round":5},{"name":"Devin Williams","price":19,"pos":"RP","keeper":false,"round":6},{"name":"Tatsuya Imai","price":5,"pos":"SP","keeper":false,"round":7}]},"JE":{"roster":[{"name":"Jose Ramirez","price":51,"pos":"3B","keeper":true,"round":null},{"name":"Junior Caminero","price":16,"pos":"3B","keeper":true,"round":null},{"name":"Jeremy Pena","price":14,"pos":"SS","keeper":true,"round":null},{"name":"Yandy Diaz","price":10,"pos":"1B","keeper":true,"round":null},{"name":"Trea Turner","price":28,"pos":"SS","keeper":false,"round":1},{"name":"Freddie Freeman","price":23,"pos":"1B","keeper":false,"round":2},{"name":"Lawrence Butler","price":5,"pos":"OF","keeper":false,"round":6},{"name":"Chandler Simpson","price":5,"pos":"OF","keeper":false,"round":7},{"name":"Nathan Eovaldi","price":8,"pos":"SP","keeper":true,"round":null},{"name":"Zack Wheeler","price":19,"pos":"SP","keeper":false,"round":3},{"name":"Dylan Cease","price":21,"pos":"SP","keeper":false,"round":4},{"name":"Ryan Walker","price":5,"pos":"RP","keeper":false,"round":5},{"name":"Jack Flaherty","price":4,"pos":"SP","keeper":false,"round":8},{"name":"Ryan Helsley","price":16,"pos":"RP","keeper":false,"round":9}]},"AM":{"roster":[{"name":"Pete Alonso","price":31,"pos":"1B","keeper":true,"round":null},{"name":"Jarren Duran","price":17,"pos":"OF","keeper":true,"round":null},{"name":"George Springer","price":11,"pos":"OF","keeper":true,"round":null},{"name":"Byron Buxton","price":9,"pos":"OF","keeper":true,"round":null},{"name":"Vladimir Guerrero Jr.","price":41,"pos":"1B","keeper":false,"round":1},{"name":"Ezequiel Tovar","price":4,"pos":"SS","keeper":false,"round":2},{"name":"Jake Burger","price":1,"pos":"1B","keeper":false,"round":3},{"name":"Matt Chapman","price":12,"pos":"3B","keeper":false,"round":8},{"name":"Aroldis Chapman","price":12,"pos":"RP","keeper":true,"round":null},{"name":"Shane McClanahan","price":6,"pos":"SP","keeper":false,"round":4},{"name":"Robert Garcia","price":3,"pos":"RP","keeper":false,"round":5},{"name":"Taylor Rogers","price":1,"pos":"RP","keeper":false,"round":6},{"name":"Edwin Diaz","price":23,"pos":"RP","keeper":false,"round":7},{"name":"Brandon Woodruff","price":17,"pos":"SP","keeper":false,"round":9}]},"JW":{"roster":[{"name":"James Wood","price":11,"pos":"OF","keeper":true,"round":null},{"name":"Maikel Garcia","price":9,"pos":"3B","keeper":true,"round":null},{"name":"Fernando Tatis Jr.","price":42,"pos":"OF","keeper":false,"round":1},{"name":"Josh Naylor","price":21,"pos":"1B","keeper":false,"round":2},{"name":"CJ Abrams","price":20,"pos":"SS","keeper":false,"round":3},{"name":"Kyle Stowers","price":15,"pos":"OF","keeper":false,"round":4},{"name":"Addison Barger","price":4,"pos":"3B,OF","keeper":false,"round":5},{"name":"Justin Crawford","price":3,"pos":"OF","keeper":false,"round":8},{"name":"Bryan Woo","price":17,"pos":"SP","keeper":true,"round":null},{"name":"Shohei Ohtani","price":11,"pos":"SP","keeper":true,"round":null},{"name":"Emmet Sheehan","price":8,"pos":"SP","keeper":true,"round":null},{"name":"Bryan Abreu","price":4,"pos":"RP","keeper":false,"round":6},{"name":"Jeff Hoffman","price":17,"pos":"RP","keeper":false,"round":7},{"name":"Nick Lodolo","price":13,"pos":"SP","keeper":false,"round":9}]},"CS":{"roster":[{"name":"Matt Olson","price":34,"pos":"1B","keeper":true,"round":null},{"name":"Cal Raleigh","price":22,"pos":"C","keeper":true,"round":null},{"name":"Corbin Carroll","price":39,"pos":"OF","keeper":false,"round":1},{"name":"Dylan Crews","price":6,"pos":"OF","keeper":false,"round":4},{"name":"Bryce Eldridge","price":3,"pos":"1B","keeper":false,"round":5},{"name":"Alec Bohm","price":7,"pos":"3B","keeper":false,"round":6},{"name":"Bryson Stott","price":6,"pos":"2B","keeper":false,"round":7},{"name":"Munetaka Murakami","price":5,"pos":"3B","keeper":false,"round":8},{"name":"Andres Munoz","price":23,"pos":"RP","keeper":true,"round":null},{"name":"Chris Sale","price":21,"pos":"SP","keeper":true,"round":null},{"name":"Emilio Pagan","price":6,"pos":"RP","keeper":true,"round":null},{"name":"George Kirby","price":23,"pos":"SP","keeper":false,"round":2},{"name":"Nolan McLean","price":16,"pos":"SP","keeper":false,"round":3}]},"PA":{"roster":[{"name":"Aaron Judge","price":56,"pos":"OF","keeper":true,"round":null},{"name":"Pete Crow-Armstrong","price":17,"pos":"OF","keeper":true,"round":null},{"name":"Brice Turang","price":15,"pos":"2B","keeper":true,"round":null},{"name":"Luke Keaschall","price":7,"pos":"2B","keeper":true,"round":null},{"name":"Ben Rice","price":6,"pos":"C,1B","keeper":true,"round":null},{"name":"Spencer Torkelson","price":5,"pos":"1B","keeper":false,"round":3},{"name":"Colson Montgomery","price":4,"pos":"SS","keeper":false,"round":4},{"name":"Cody Bellinger","price":23,"pos":"OF","keeper":false,"round":7},{"name":"Joe Ryan","price":22,"pos":"SP","keeper":false,"round":1},{"name":"Jacob Misiorowski","price":19,"pos":"SP","keeper":false,"round":2},{"name":"David Bednar","price":20,"pos":"RP","keeper":false,"round":5},{"name":"Pete Fairbanks","price":12,"pos":"RP","keeper":false,"round":6},{"name":"Cam Schlittler","price":9,"pos":"SP","keeper":false,"round":8}]},"SS":{"roster":[{"name":"Kody Kurtz","price":6,"pos":"1B","keeper":true,"round":null},{"name":"Francisco Lindor","price":36,"pos":"SS","keeper":false,"round":1},{"name":"Kyle Tucker","price":46,"pos":"OF","keeper":false,"round":2},{"name":"Rafael Devers","price":22,"pos":"1B","keeper":false,"round":3},{"name":"Seiya Suzuki","price":20,"pos":"OF","keeper":false,"round":4},{"name":"Royce Lewis","price":6,"pos":"3B","keeper":false,"round":5},{"name":"Corey Seager","price":19,"pos":"SS","keeper":false,"round":6},{"name":"Brenton Doyle","price":5,"pos":"OF","keeper":false,"round":7},{"name":"Adley Rutschman","price":8,"pos":"C","keeper":false,"round":8},{"name":"Cade Ragins","price":27,"pos":"SP","keeper":true,"round":null},{"name":"Hunter Brown","price":15,"pos":"SP","keeper":true,"round":null},{"name":"Garrett Crochet","price":11,"pos":"SP","keeper":true,"round":null},{"name":"Edward Cabrera","price":6,"pos":"SP","keeper":true,"round":null}]},"BF":{"roster":[{"name":"Jazz Chisholm","price":33,"pos":"2B","keeper":true,"round":null},{"name":"Wyatt Langford","price":17,"pos":"OF","keeper":true,"round":null},{"name":"Brent Rooker","price":13,"pos":"OF","keeper":true,"round":null},{"name":"Yordan Alvarez","price":33,"pos":"OF","keeper":false,"round":1},{"name":"Kevin McGonigle","price":2,"pos":"SS","keeper":false,"round":2},{"name":"Vinnie Pasquantino","price":20,"pos":"1B","keeper":false,"round":3},{"name":"Jordan Lawlar","price":3,"pos":"3B","keeper":false,"round":4},{"name":"Matt McLain","price":5,"pos":"2B,SS","keeper":false,"round":6},{"name":"Francisco Alvarez","price":4,"pos":"C","keeper":false,"round":8},{"name":"Tarik Skubal","price":20,"pos":"SP","keeper":true,"round":null},{"name":"Kyle Bradish","price":7,"pos":"SP","keeper":true,"round":null},{"name":"Jhoan Duran","price":20,"pos":"RP","keeper":false,"round":5},{"name":"Ryan Weathers","price":2,"pos":"SP","keeper":false,"round":7}]}};
+
+// BOOT
+(function() {
+  if (!loadState()) initState();
+  render();
+})();
+</script>
+</body>
+</html>
